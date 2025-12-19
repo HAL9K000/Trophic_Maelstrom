@@ -34,9 +34,16 @@ int main(int argc, char *argv[])
   
   dx= 0.1 ; //From Bonachela et al 2015 (in km)
   d0 = 0.00025/24.0; d1=0.0298; d2= 0.05221; d3 = 0.00025/24.0; d4= 0.025/24.0; //From Bonachela et al 2015 (in km^2/hr)
-  s0 = sqrt(d0/(dx*dx)); // ~ D0/(dx)^2 (in kg^{0.5}/(km hr))
-  s1 = 1; // ~ D/(dx)^2 (in kg^{0.5}/(km hr))
-  s2 = 3; // ~ D/(dx)^2 (in kg^{0.5}/(km hr))
+  s0 = 1*sqrt(d0/(dx*dx)); // ~ D0/(dx)^2 (in kg^{0.5}/(km hr))
+  if(dx > 0.05)
+  {
+    s1 = 1; s2 = 3; // ~ D/(dx)^2 (in kg^{0.5}/(km hr))  
+  }
+  else
+  {
+    s1 = 1*sqrt(d1/(dx*dx)); s2 = 1*sqrt(d2/(dx*dx)); // ~ D/(dx)^2 (in kg^{0.5}/(km hr))
+  }
+  
   
   // Allometric scaling for velocity: 
   // v (m/hr) = 43.706*M^1.772*(1 - e^{-14.27*(M)^(-1.865)}), where M is mass in kg.

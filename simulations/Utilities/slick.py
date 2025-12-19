@@ -35,6 +35,7 @@ import scipy.signal as _cpu_signal
 import scipy.interpolate as _cpu_interpolate
 import scipy.stats as _cpu_stats
 import scipy.ndimage as _cpu_ndimage
+import pandas as _cpu_pandas
 
 # Ensure warnings don't show full paths
 warnings.formatwarning = lambda message, category, filename, lineno, line=None: f"{os.path.basename(filename)}:{lineno}: {category.__name__}: {message}\n"
@@ -84,14 +85,14 @@ if USE_CUDA:
 try:
     import dask.distributed as _dask_distributed
     import dask as _dask
-    from dask import delayed as _dask_delayed
     from dask.distributed import Client as _dask_Client
+    from dask import delayed as _dask_delayed
     from dask.distributed import progress as _dask_progress
     from dask.distributed import LocalCluster as _dask_LocalCluster
     from dask.diagnostics import ProgressBar as _dask_ProgressBar
 
-    DASK_AVAILABLE = True
-    print("Dask distributed is available and enabled for parallel processing.✅✅✅"); time.sleep(1)
+    #DASK_AVAILABLE = True
+    #print("Dask distributed is available and enabled for parallel processing.✅✅✅"); time.sleep(1)
 except ImportError as e:
     warnings.warn(f"Dask distributed not found: {e}. Switching to joblib... True CPU-GPU interops not available. ❌"); time.sleep(2)
 

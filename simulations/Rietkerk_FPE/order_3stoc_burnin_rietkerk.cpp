@@ -13,7 +13,7 @@ int main(int argc, char *argv[])
   string preFIX; // Prefix for the output files
   string input_preFIX= "HEXBLADE"; // Prefix for the input files
   string input_frame_subdir; // Subdirectory for the input frames.
-  double input_Tval = 75857.7;
+  double input_Tval = 76000;
   double a_c =1/24.0;
   double c, gmax, alpha, d, rW, W0, t_max, dt, dx; //int g, div;
   double a_start, a_end; double r; double dP; // Kick for high initial state
@@ -72,17 +72,17 @@ int main(int argc, char *argv[])
 
 
   ///** SPECIFIC MASS OF  GRAZER = 20 kg, MASS OF PREDATOR = 100 kg.  
-  d0 = 0.00025/24.0; d1=0.0298; d2= 0.05221; d3 = 0.00025/24.0; d4= 0.025/24.0; s2 = 3; //From Bonachela et al 2015 (in km^2/hr) and general D allometry.
+  d0 = 0.00025/24.0; d1=0.25*0.0298; d2= 0.25*0.05221; d3 = 0.00025/24.0; d4= 0.025/24.0;  //From Bonachela et al 2015 (in km^2/hr) and general D allometry.
   //d0 = 0.00025/24.0; d1=0.01028; d2= 0.215965; d3 = 0.00025/24.0; d4= 0.025/24.0; s2 = 10; //From Bonachela et al 2015 (in km^2/hr) and specific D allometries.
   
   s0 = sqrt(d0/(dx*dx)); // ~ D0/(dx)^2 (in kg^{0.5}/(km hr))
-  s1 = 1; // ~ D/(dx)^2 (in kg^{0.5}/(km hr))
+  s1 = 1; s2 = 3; // ~ D/(dx)^2 (in kg^{0.5}/(km hr))
   //s2 = 3; // ~ D/(dx)^2 (in kg^{0.5}/(km hr))
   //s2 = 10; // ~ D/(dx)^2 (in kg^{0.5}/(km hr))
   
   // Allometric scaling for velocity: 
   // v (m/hr) = 43.706*M^1.772*(1 - e^{-14.27*(M)^(-1.865)}), where M is mass in kg.
-  v1 = 0.45427; //In km/hr
+  v1 = 2*0.45427; //In km/hr
   v2 = 0.40587; //In km/hr
 
   
@@ -281,22 +281,33 @@ int main(int argc, char *argv[])
   set_input_Prefix(input_frame_subdir, preFIX, a_c, dP, Gstar); 
   //Set the prefix (and thus save folders) to the user-defined prefix.
   cout << "Heuristic Input directory for frames: " << input_frame_parenfolder  + input_frame_subfolder << "\n";
+  cerr << "Heuristic Input directory for frames: " << input_frame_parenfolder  + input_frame_subfolder << "\n";
 
   set_global_FKE_params(D, v, dt_adv, dt_analytical, dx, g, 4); //Set the global parameters for system-wide and FKE movement parameters.
   cout << "Global parameters set, with dt/2.0 = " << dt2 << " and dx*dx = " << dx2 <<  " and 1/(dx*dx) = " << dx1_2 << "\n";
-
-  cout << "FKE Movement Parameters set as follows:\n";
+  cerr << "Global parameters set, with dt/2.0 = " << dt2 << " and dx*dx = " << dx2 <<  " and 1/(dx*dx) = " << dx1_2 << "\n";
+  cout << "FKE Movement Parameters set as follows:\n"; cerr << "FKE Movement Parameters set as follows:\n";
   for(int s=0; s < SpB; s++)
   {
     cout  << "For species " << s << " with [D, v, dtv]: " << D[s] << ", " << v[s] << ", " << dt_adv[s] << ", we have:\n";
     cout << "Beta_V = " << beta_vel[s] << "\t sigma_D = " << sigma_D[s] << " with scaled bound = " << sig_D_ScaledBounds[s] 
     << "\t sigma_vD( X, Y) = { " << sigma_vD[s].first << ", " << sigma_vD[s].second << " } with scaled bounds = { " 
     << sig_vD_ScaledBounds[s].first << ", " << sig_vD_ScaledBounds[s].second << " } and AVG Shift mu : " << mu_vel_prefactor[s]*v[s] << "\n";
+    cerr << "For species " << s << " with [D, v, dtv]: " << D[s] << ", " << v[s] << ", " << dt_adv[s] << ", we have:\n";
+    cerr << "Beta_V = " << beta_vel[s] << "\t sigma_D = " << sigma_D[s] << " with scaled bound = " << sig_D_ScaledBounds[s]
+    << "\t sigma_vD( X, Y) = { " << sigma_vD[s].first << ", " << sigma_vD[s].second << " } with scaled bounds = { "
+    << sig_vD_ScaledBounds[s].first << ", " << sig_vD_ScaledBounds[s].second << " } and AVG Shift mu : " << mu_vel_prefactor[s]*v[s] << "\n";
     if ( sigma_vD[s].first == sigma_vD[s].second)
+    {
       cout << "Additionally velocity OU Process for species " << s << " IS SYMMETRIC.\n";
+      cerr << "Additionally velocity OU Process for species " << s << " IS SYMMETRIC.\n";
+    }
     else
+    {
       cout << "Additionally velocity OU Process for species " << s << " IS NOT SYMMETRIC.\n";
-    cout << "____________________________________________________\n";
+      cerr << "Additionally velocity OU Process for species " << s << " IS NOT SYMMETRIC.\n";
+    }
+    cout << "____________________________________________________\n"; cerr << "____________________________________________________\n";
   }
 
 #ifdef BARRACUDA
@@ -465,6 +476,7 @@ int main(int argc, char *argv[])
   //NOTE: The following clow is used for Gaussian initial conditions for testing and is NOT MEANT FOR PRODUCTION RUNS.
 
   //double clow[2*Sp] = {500, Gstar*10, 40, 4, 20, 500, Gstar*10, 40, 4, 10};
+  //double scaling_factor[2*Sp] = {500, 45, 40, 4, 20, 500, 45, 40, 4, 10};
   
   //c_high and c_low are arrays of size 2*Sp, with the values of the constants for each species.
 	// If R < R_c, then the first Sp elements of c_high and c_low are passed to init_randconstframe() to initialise the frame.

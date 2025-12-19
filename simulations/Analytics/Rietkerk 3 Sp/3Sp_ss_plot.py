@@ -281,7 +281,7 @@ def eigenval_check(R, Vstar, Wstar, Ostar, Gstar, Pstar):
             print("Vstar, Wstar, Ostar, Gstar, Pstar: ", Vstar[i], Wstar[i], Ostar[i], Gstar[i], Pstar[i])
             eigvals[i] = np.array([np.nan, np.nan, np.nan, np.nan], dtype=complex)
 
-        eigvals[i] = la.eigvals(J[i])
+        #eigvals[i] = la.eigvals(J[i])
     
     # Check the stability of the equilibria.
     # If the real part of the eigenvalues are negative, the equilibria are stable.

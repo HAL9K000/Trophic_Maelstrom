@@ -32,8 +32,8 @@ if gpu.DASK_AVAILABLE:
     # Set up global Dask Client and configure it.
     #dask = gpu._dask
     #dask_distributed = gpu._dask_distributed
-    dask_delayed = gpu._dask_delayed
     dask_progress = gpu._dask_progress
+    dask_delayed = gpu._dask_delayed
     dask_Client = gpu._dask_Client
     dask_LocalCluster = gpu._dask_LocalCluster
     #dask_ProgressBar = gpu._dask_ProgressBar
@@ -52,12 +52,11 @@ is_gpu_array = gpu.is_gpu_array
 
 # For type checking and constants - use direct CPU access
 _np_base = gpu._cpu_np  # Access the underlying numpy module
+_pan_base = gpu._cpu_pandas  # Access the underlying pandas module
 
 # CPU-only modules
-#esda_moran = gpu.cpu_safe_import("esda.moran")
-#libpysal_weights = gpu.cpu_safe_import("libpysal.weights")
-#import esda.moran as esda_moran
-#import libpysal.weights as libpysal_weights
+esda_moran = gpu.cpu_safe_import("esda.moran")
+libpysal_weights = gpu.cpu_safe_import("libpysal.weights")
 #from esda_moran import Moran_BV
 #from libpysal_weights import Queen, KNN, lat2W
 
@@ -380,7 +379,7 @@ def savetxt_to_dir(data, savedir, savefilename, header = None, index = False, se
             return
     try:
         # Check if data is a dataframe or an array (or list-like object).
-        if isinstance(data, pan.DataFrame):
+        if isinstance(data, _pan_base.DataFrame):
             data.to_csv(savedir + "/" + savefilename, header = header, index = index, sep = sep)
         else:
             np.savetxt(savedir + "/" + savefilename, data, delimiter = sep, fmt="%g")
@@ -630,7 +629,7 @@ def gen_MEAN_INDVL_Colsfiledata(files, pathtodir="", ext="csv", exclude_col_labe
     The function will also generate the mean FFT power spectra across all files for each column in the files, which is stored in POWER[{var}]_MEAN.
 '''
 def gen_FFT_PowerSpectra(files, pathtodir="", ext="csv", bin_mask= None, exclude_col_labels= ["a_c", "x", "L"], 
-                         Tmin= None, Tmax = None, Lval="infer", binwidth=0.5, verbose= False):
+                         Tmin= None, Tmax = None, Lval="infer", binwidth=1, verbose= False):
     
     # Read the first file in files.
     # If L is not provided, infer L from the maximum length of the column in the files.
@@ -819,16 +818,13 @@ def gen_FFT_PowerSpectra(files, pathtodir="", ext="csv", bin_mask= None, exclude
             fourier_amplitudes = fourier_amplitudes.flatten()
             
             #Ampbins, _, _ = stats.binned_statistic(knrm, fourier_amplitudes, bins=kbins, statistic='mean')
-            
             bin_sums, _ = np.histogram(knrm, bins=kbins, weights=fourier_amplitudes)
             bin_counts, _ = np.histogram(knrm, bins=kbins)
             # Calculate the average power in each bin, avoiding division by zero.
             Ampbins = np.divide(bin_sums, bin_counts, out=np.zeros_like(bin_sums), where=bin_counts!=0)
-            Ampbins *= np.pi * (kbins[1:]**2 - kbins[:-1]**2) # Calculate the area of each bin in frequency space.
             #WARNING: Unlike stats.binned_statistic, np.histogram does not return NaN for empty bins, but 0.
             # So we need to replace 0 with NaN in Ampbins.
             # Store the FFT power spectra for each column in the files for each file at the END of the dataframe.
-
             df_fft_power.insert(len(df_fft_power.columns), "POWER[" + col + "]_" + Rstr, pan.Series(Ampbins))
             # Replace all 0s in Ampbins with NaN.
             df_fft_power["POWER[" + col + "]_" + Rstr] = df_fft_power["POWER[" + col + "]_" + Rstr].replace(0, np.nan)
@@ -1497,11 +1493,10 @@ def compute_BiMoronsI(X, Y):
     L = round(asnumpy(X.shape[0])**0.5)  # Use round to ensure L is an integer
     #print(f"Computing Bi-variate Moran's I for L = {L} ...")
     #Spatial_Weights = libpysal_weights.lat2W(L, L)
-    #Spatial_Weights= cached_libpysalweights_lat2W(L)
-    #MoranI = esda_moran.Moran_BV(X, Y, Spatial_Weights)
+    Spatial_Weights= cached_libpysalweights_lat2W(L)
+    MoranI = esda_moran.Moran_BV(X, Y, Spatial_Weights)
     #print(f"Bi-variate Moran's I: {MoranI.I}, p-value: {MoranI.p_sim}")
-    #return MoranI.I, MoranI.p_sim
-    return None, None  # Placeholder return, as the actual computation is not implemented here.
+    return MoranI.I, MoranI.p_sim
 
 
 
@@ -3070,7 +3065,11 @@ def gen_MEAN_INDVL_Prelimsfiledata(files, pathtodir="", ext="csv", tmax =None, d
 
         #First read the file.
         if(ext == "csv"):
-            df = pan.read_csv(file, header=0)
+            try:
+                df = pan.read_csv(file, header=0)
+            except Exception as e:
+                print("Error: Failed to read file " + pathtodir +"/" + files[0] + " with error message: \n" + str(e))
+                return None
         else:
             try:
                 df = pan.read_table(file, header=0)

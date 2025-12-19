@@ -39,7 +39,72 @@ template <typename T> int sgn_index(T val)
 }
 
 
+#if defined(BARRACUDA)
+//Helper functions for type casting
+// Scalar specialization
+template <typename Src, typename Dst>
+__host__ __device__ inline void cast_value(const Src &src, Dst &dst) {
+    dst = static_cast<Dst>(src);
+}
+
+// Pair specialization
+template <typename SrcT1, typename SrcT2, typename DstT1, typename DstT2>
+__host__ __device__ inline void cast_value(const std::pair<SrcT1, SrcT2> &src,
+                                           std::pair<DstT1, DstT2> &dst) {
+    dst.first  = static_cast<DstT1>(src.first);
+    dst.second = static_cast<DstT2>(src.second);
+}
+
+// Copy a vector of type Tsrc with N elements to device array of type Tdst
+template <typename Tsrc, typename Tdst>
+void transfer_castedVec_to_device(const std::vector<Tsrc> &host_src, Tdst* d_dst_out, size_t N) {
+    //static_assert(std::is_arithmetic<Tsrc>::value && std::is_arithmetic<Tdst>::value,
+    //              "upload_casted_to_device: only numeric types are supported");
+
+    //const size_t N = host_src.size();
+    std::vector<Tdst> tmp(N);
+
+    // Explicit cast (avoids narrowing warnings)
+    for (size_t i = 0; i < N; ++i)
+        cast_value(host_src[i], tmp[i]);
+		//tmp[i] = static_cast<Tdst>(host_src[i]);
+
+    cudaError_t err = cudaMemcpy(d_dst_out, tmp.data(), sizeof(Tdst) * N, cudaMemcpyHostToDevice);
+    if (err != cudaSuccess) {
+        throw std::runtime_error("cudaMemcpy (H-->D) failed: " + std::string(cudaGetErrorString(err)));
+    }
+}
+
+template <typename Tsrc, typename Tdst>
+void transfer_castedVec_to_host(const Tsrc *d_src, std::vector<Tdst> &host_dst, size_t N) 
+{
+    //static_assert(std::is_arithmetic<Tsrc>::value && std::is_arithmetic<Tdst>::value,
+    //              "download_casted_to_host: only numeric types are supported");
+    //const size_t N = host_dst.size();
+    std::vector<Tsrc> tmp(N);
+
+    cudaError_t err = cudaMemcpy(tmp.data(), d_src, sizeof(Tsrc) * N, cudaMemcpyDeviceToHost);
+    if (err != cudaSuccess) {
+        throw std::runtime_error("cudaMemcpy (D-->H) failed: " + std::string(cudaGetErrorString(err)));
+    }
+
+    for (size_t i = 0; i < N; ++i)
+        cast_value(host_dst[i], tmp[i]);
+		//host_dst[i] = static_cast<Tdst>(tmp[i]);
+}
+
+#endif
+
+
+//--------------------Defining CUDA Context Kernel------------------------------------//
+
+
+
 //--------------------Defining Primitives------------------------------------//
+
+
+
+
 
 void increase_stack_limit(long long stack_size){
 
@@ -103,6 +168,56 @@ string format_str(const std::string& s, const std::map<string, string>& values)
     }
 
     return result;
+}
+
+// Function to precompute FFTs of neighborhood kernels for different radii R.
+// These FFTs are stored in a cache indexed by R for efficient reuse during simulations.
+// 
+void precompute_FFT_KHat_kernels(FFTW3_CentralPlanner& fft_centralplanner, int L, int Rmax, double nVeg_frac_min /*= 0.2 */, double nVeg_frac_max /*= 1.0 */)
+{
+    int L2 = L * L;
+    //int new_length_max = int(nVeg_frac_max * nVeg_frac_max * centralNeighboringSites.size());
+	//int new_length_min = int(nVeg_frac_min * nVeg_frac_min * centralNeighboringSites.size());
+    //if (new_length_max < 1) new_length_max = 1; if (new_length_min < 1) new_length_min = 1;
+    
+	for(int R = 0; R <= Rmax; R++)	
+    //for (int eff_nR_Perp_size = new_length_min; eff_nR_Perp_size <= new_length_max; eff_nR_Perp_size++)	
+	{
+		double frac = double(R) / double(Rmax);
+		// Compute sorted neighboring site indices (centralized around (0,0)) for current R.
+		std::vector<std::pair<int, int>> originK_R = computeNeighboringSitesCentral(R);
+		int eff_nR_Perp_size = originK_R.size();
+		//int eff_nR_Perp_size = int(frac * frac * centralNeighboringSites.size());
+		if (eff_nR_Perp_size < 1) eff_nR_Perp_size = 1;
+		// Check if kernel for this radius is already computed
+		//if (kHat_kernel_FFT_cache.find(R) != kHat_kernel_FFT_cache.end()) {
+		//	continue; // Kernel already computed, skip
+		//}
+		
+		kHat_kernel_FFT_cache[R] = nullptr; // Initialize cache entries to nullptr
+		// Create kernel in spatial domain which is 1 at each (periodic) neighbor location, 0 elsewhere.
+        std::fill(fft_centralplanner.kernel_spatial, fft_centralplanner.kernel_spatial + L2, 0.0);
+        // Build kernel: 1/N at each neighbor location, accounting for periodic boundaries
+        double kernel_weight = 1.0/ eff_nR_Perp_size;
+        for (int k = 0; k < eff_nR_Perp_size; k++) 
+		{
+            int dx = originK_R[k].first;
+            int dy = originK_R[k].second;
+            // Convert to array index with periodic wrapping
+            int kx = (dx + L) % L;
+            int ky = (dy + L) % L;
+            fft_centralplanner.kernel_spatial[kx * L + ky] = kernel_weight;
+        }
+        // FFT of the kernel, and the forward plan creation.
+        fftw_complex* kernel_fft = fftw_alloc_complex(L2);
+		fftw_plan forward_kernel = fftw_plan_dft_r2c_2d(L, L, fft_centralplanner.kernel_spatial, kernel_fft, FFTW_ESTIMATE);
+		fftw_execute(forward_kernel);
+        //fftw_execute_dft_r2c(fft_centralplanner.forward_kernel, fft_centralplanner.kernel_spatial, kernel_fft);
+        kHat_kernel_FFT_cache[R] = kernel_fft;
+		// Map R to eff_nR_Perp_size for later use.
+		nR_Perp_R[R] = eff_nR_Perp_size;
+		fftw_destroy_plan(forward_kernel); // Clean up plan after execution
+    }
 }
 
 bool comparePairs(const pair<int, int>& a, const pair<int, int>& b) 
@@ -2526,9 +2641,103 @@ void RK4_Integrate_Stochastic_2Sp(D2Vec_Double &Rho_t, D2Vec_Double &Rho_tsar, D
 	}
 }
 
+// FFTW3-based gamma sweep calculation for 3-Species Non-Refugia model.
+void calc_gamma_2Sp_NonRefugia_FFT(D2Vec_Double& Rho_t, D2Vec_Double& gamma, double (&Rho_avg)[Sp], vector<std::pair<double, int>>& rfrac, 
+    vector<std::pair<int, int>>& dtV_counter, double nVeg_frac, int r_max, int L, FFTW3_CentralPlanner& fft_central_plan)    
+{
+	mutex errorMutex; // Mutex to make error messages thread-safe
+    int L2 = L * L;
+    double eps = 1.0e-12;
+
+	int rmax_eff = int(nVeg_frac * r_max); //Effective r_max based on vegetation fraction.
+	
+
+    double rho_inverse[SpB];
+    for (int s = 0; s < SpB; s++)
+        Rho_avg[s] >= eps ? rho_inverse[s] = 1 / Rho_avg[s] : rho_inverse[s] = 1 / eps; //Avoid division by zero.
+    
+	for (const auto& frac : rfrac) {
+        int s = frac.second;
+        double fr = frac.first;
+
+		int r_eff = int(fr * rmax_eff); //Effective r based on species fraction and vegetation cover.
+		int eff_nR_Perp_size = nR_Perp_R[r_eff]; //Get precomputed effective nR_Perp size.
+        //int eff_nR_Perp_size = int(fr * fr * new_length);
+        if (fr == 0.0) continue; //Skip if fraction is zero.
+		if (s == 0) continue; //Skip vegetation.
+        if (eff_nR_Perp_size < 1) eff_nR_Perp_size = 1;
+        if (Rho_avg[s] < eps) 
+		{
+			#pragma omp simd
+            for (int i = 0; i < L2; i++) gamma[s][i] = 0.0;
+            continue;
+        }
+        if (Rho_avg[s-1] < eps) 
+		{
+			#pragma omp simd
+            for (int i = 0; i < L2; i++) gamma[s][i] = 0.0;
+            continue;
+        }
+        
+        // Prepare spatial field based on species
+        if (s == 1) 
+		{
+            // Copy vegetation density directly
+            std::copy(Rho_t[s-1].begin(), Rho_t[s-1].end(), fft_central_plan.rho_spatial);
+
+        }
+        
+        // Forward FFT of density (Rho) field
+        fftw_execute_dft_r2c(fft_central_plan.forward_rho, fft_central_plan.rho_spatial, fft_central_plan.rho_fft);
+        
+        // Get precomputed kernel FFT
+        fftw_complex* kernel_fft = kHat_kernel_FFT_cache[r_eff];
+        
+		double real_part, imag_part;
+        // Multiply in Fourier space (complex multiplication)
+		#pragma omp simd
+        for (int i = 0; i < L2; i++) 
+		{
+			// RECALL: Z = (a + ib)*(c + id) = (ac - bd) + i(ad + bc)
+            real_part = fft_central_plan.rho_fft[i][0] * kernel_fft[i][0] - 
+                fft_central_plan.rho_fft[i][1] * kernel_fft[i][1];
+            imag_part = fft_central_plan.rho_fft[i][0] * kernel_fft[i][1] + 
+                fft_central_plan.rho_fft[i][1] * kernel_fft[i][0];
+            fft_central_plan.prod_fft[i][0] = real_part; 
+			fft_central_plan.prod_fft[i][1] = imag_part;
+        }
+        
+        // Inverse FFT to get convolution result
+        fftw_execute_dft_c2r(fft_central_plan.backward, fft_central_plan.prod_fft, fft_central_plan.convolution_spatial);
+        // Normalize and apply species-specific scaling.
+        double normalisation = 1.0 / L2;  // FFTW3 doesn't normalise - multiplication by 1/(L*L) is needed.
+		#pragma omp simd
+        for (int i = 0; i < L2; i++) 
+		{
+            gamma[s][i] = fft_central_plan.convolution_spatial[i] * normalisation * rho_inverse[s-1];
+		}
+		// Clamp to [0, 1]
+        for (int i = 0; i < L2; i++) 
+		{   
+			if (gamma[s][i] > 1.0) gamma[s][i] = 1.0;
+            else if (gamma[s][i] < 0.0) gamma[s][i] = 0.0;
+			else if (isnan(gamma[s][i]) == true || isinf(gamma[s][i]) == true)
+			{
+				errorMutex.lock();
+				std::cerr << "Gamma is NaN with value: " << gamma[s][i] << " For [s, thr, i]\t" << s << " , " << omp_get_thread_num()
+					<< " , " << i << " ] with Rho_avg[0]: " << Rho_avg[0] << " and Rho_avg[1]: " << Rho_avg[1] << " and Rho_avg[2]: " << Rho_avg[2]
+					<< " \n and Rho_t[0][i]: " << Rho_t[0][i] << " and Rho_t[1][i]: " << Rho_t[1][i] << " and Rho_t[2][i]: " << Rho_t[2][i]
+					<< " \n and Nveg_frac: " << nVeg_frac << " and r_eff: " << r_eff << " and rfrac.size(): " << rfrac.size() << " and nR_Perp_R[r_eff]: " << nR_Perp_R[r_eff]
+					<< std::endl;
+				errorMutex.unlock();
+			}
+        }
+    }
+}
+
 // Calculate the gamma values for 2Species model with Vegetation and Grazers.
-void calc_gamma_2Sp_NonRefugia(const vector<pair<int, int>>& centralNeighboringSites, D2Vec_Double &Rho_t, D2Vec_Double &gamma,  
-			double (&Rho_avg)[Sp], vector <std::pair<double, int>>& rfrac, double nVeg_frac, int r_max, int L)
+void calc_gamma_2Sp_NonRefugia(const vector<pair<int, int>>& centralNeighboringSites, D2Vec_Double &Rho_t, D2Vec_Double &gamma, double (&Rho_avg)[Sp],   
+	vector <std::pair<double, int>>& rfrac, vector<std::pair<int, int>>& dtV_counter, double nVeg_frac, int r_max, int L)
 {	
 	if(nVeg_frac < 0.35)
 		nVeg_frac = 0.35; //Minimum fraction of vegetation cover.
@@ -2613,12 +2822,12 @@ void f_2Dor_3Sp(D2Vec_Double &f, D2Vec_Double &Rho_M, D3Vec_Int &nR2, double a, 
 	// The following values are precomputed to reduce time complexity.
 	double cgmax = c*gmax; double K2W0 = K[2]*W0; double A01H01 = A[0][1]*H[0][1]; double A12H12 = A[1][2]*H[1][2];
 	// The following are the values of E*A and A*H for each species, which reduces time complexity by avoiding repeated calculations.
-	double EA1 = E[1]*A[0][1]; double EA2 = E[2]*A[1][2];
+	double EA1 = E[1]*A[0][1]; double EA2 = E[2]*A[1][2]; int L2 = g*g; //L2 is the total number of sites in the lattice.
 	//vector<double> EA(SpB);
 	//for(int s=1; s< SpB; s++)
 	//	EA[s] = E[s]*A[s-1][s];
 	#pragma omp simd // SIMD optimization for better performance.	
-	for(int i=0; i < g*g; i++)
+	for(int i=0; i < L2; i++)
 	{
         //Equations for the density of plants, soil water, surface water and grazers at each site.
         //Note that the Laplacian is calculated using reflective boundary conditions.
@@ -3148,13 +3357,121 @@ int save_prelimfileswrapper(int index, int tot_iter, int j, int thrID,  double t
 
 }
 
+// FFTW3-based gamma sweep calculation for 3-Species Non-Refugia model.
+void calc_gamma_3Sp_NonRefugia_FFT(D2Vec_Double& Rho_t, D2Vec_Double& gamma, double (&Rho_avg)[Sp], vector<std::pair<double, int>>& rfrac, 
+    vector<std::pair<int, int>>& dtV_counter, double nVeg_frac, int r_max, int L, FFTW3_CentralPlanner& fft_central_plan)
+    
+{
+	mutex errorMutex; // Mutex to make error messages thread-safe
+    int L2 = L * L;
+    double eps = 1.0e-12;
+    //int new_length = int(nVeg_frac * nVeg_frac * centralNeighboringSites.size());
+    //if (new_length < 1) new_length = 1;
+
+	int rmax_eff = int(nVeg_frac * r_max); //Effective r_max based on vegetation fraction.
+	
+
+    double rho_inverse[SpB];
+    for (int s = 0; s < SpB; s++)
+        Rho_avg[s] >= eps ? rho_inverse[s] = 1 / Rho_avg[s] : rho_inverse[s] = 1 / eps; //Avoid division by zero.
+    
+	for (const auto& frac : rfrac) {
+        int s = frac.second;
+        double fr = frac.first;
+
+		int r_eff = int(fr * rmax_eff); //Effective r based on species fraction and vegetation cover.
+		int eff_nR_Perp_size = nR_Perp_R[r_eff]; //Get precomputed effective nR_Perp size.
+        //int eff_nR_Perp_size = int(fr * fr * new_length);
+        if (fr == 0.0) continue; //Skip if fraction is zero.
+		if (s == 0) continue; //Skip vegetation.
+        if (eff_nR_Perp_size < 1) eff_nR_Perp_size = 1;
+        if (Rho_avg[s] < eps) 
+		{
+			#pragma omp simd
+            for (int i = 0; i < L2; i++) gamma[s][i] = 0.0;
+            continue;
+        }
+        if (Rho_avg[s-1] < eps) 
+		{
+			#pragma omp simd
+            for (int i = 0; i < L2; i++) gamma[s][i] = 0.0;
+            continue;
+        }
+        
+        // Prepare spatial field based on species
+        if (s == 1) 
+		{
+            if (Rho_avg[2] < eps) 
+			{	// Copy vegetation density directly
+                std::copy(Rho_t[s-1].begin(), Rho_t[s-1].end(), fft_central_plan.rho_spatial);
+            } else {
+                // Apply predator avoidance term
+				#pragma omp simd
+                for (int i = 0; i < L2; i++)
+				{
+            		fft_central_plan.rho_spatial[i] = Rho_t[s-1][i] * (1.0 - Rho_t[2][i] * rho_inverse[2]);
+                }
+            }
+        } else if (s == 2) {
+            // Copy grazer density
+            std::copy(Rho_t[s-1].begin(), Rho_t[s-1].end(), fft_central_plan.rho_spatial);
+        }
+        
+        // Forward FFT of density (Rho) field
+        fftw_execute_dft_r2c(fft_central_plan.forward_rho, fft_central_plan.rho_spatial, fft_central_plan.rho_fft);
+        
+        // Get precomputed kernel FFT
+        fftw_complex* kernel_fft = kHat_kernel_FFT_cache[r_eff];
+        
+		double real_part, imag_part;
+        // Multiply in Fourier space (complex multiplication)
+		#pragma omp simd
+        for (int i = 0; i < L2; i++) 
+		{
+			// RECALL: Z = (a + ib)*(c + id) = (ac - bd) + i(ad + bc)
+            real_part = fft_central_plan.rho_fft[i][0] * kernel_fft[i][0] - 
+                fft_central_plan.rho_fft[i][1] * kernel_fft[i][1];
+            imag_part = fft_central_plan.rho_fft[i][0] * kernel_fft[i][1] + 
+                fft_central_plan.rho_fft[i][1] * kernel_fft[i][0];
+            fft_central_plan.prod_fft[i][0] = real_part; 
+			fft_central_plan.prod_fft[i][1] = imag_part;
+        }
+        
+        // Inverse FFT to get convolution result
+        fftw_execute_dft_c2r(fft_central_plan.backward, fft_central_plan.prod_fft, fft_central_plan.convolution_spatial);
+        // Normalize and apply species-specific scaling.
+        double normalisation = 1.0 / L2;  // FFTW3 doesn't normalise - multiplication by 1/(L*L) is needed.
+		#pragma omp simd
+        for (int i = 0; i < L2; i++) 
+		{
+            gamma[s][i] = fft_central_plan.convolution_spatial[i] * normalisation * rho_inverse[s-1];
+		}
+		// Clamp to [0, 1]
+        for (int i = 0; i < L2; i++) 
+		{   
+			if (gamma[s][i] > 1.0) gamma[s][i] = 1.0;
+            else if (gamma[s][i] < 0.0) gamma[s][i] = 0.0;
+			else if (isnan(gamma[s][i]) == true || isinf(gamma[s][i]) == true)
+			{
+				errorMutex.lock();
+				std::cerr << "Gamma is NaN with value: " << gamma[s][i] << " For [s, thr, i]\t" << s << " , " << omp_get_thread_num()
+					<< " , " << i << " ] with Rho_avg[0]: " << Rho_avg[0] << " and Rho_avg[1]: " << Rho_avg[1] << " and Rho_avg[2]: " << Rho_avg[2]
+					<< " \n and Rho_t[0][i]: " << Rho_t[0][i] << " and Rho_t[1][i]: " << Rho_t[1][i] << " and Rho_t[2][i]: " << Rho_t[2][i]
+					<< " \n and Nveg_frac: " << nVeg_frac << " and r_eff: " << r_eff << " and rfrac.size(): " << rfrac.size() << " and nR_Perp_R[r_eff]: " << nR_Perp_R[r_eff]
+					<< std::endl;
+				errorMutex.unlock();
+			}
+        }
+    }
+}
+
 //Calculates gamma for 3 Sp Rietkerk model (details in PDF, 
 // ASSUMING PREDATORS AREN'T DETERRED BY HIGH LOCAL VEGETATION DENSITY)
 void calc_gamma_3Sp_NonRefugia(const vector<pair<int, int>>& centralNeighboringSites, D2Vec_Double &Rho_t, D2Vec_Double &gamma,  
 			double (&Rho_avg)[Sp], vector <std::pair<double, int>>& rfrac, vector <std::pair<int, int>>& dtV_counter,  double nVeg_frac, int r_max, int L)
 {	
-	if(nVeg_frac < 0.35)
-		nVeg_frac = 0.35; //Minimum fraction of vegetation cover.
+	//if(nVeg_frac < 0.35)
+	//	nVeg_frac = 0.35; //Minimum fraction of vegetation cover.
 
 	int L2 = L*L;
 	double eps = 1.0e-12; //Small number to avoid division by zero.
@@ -3325,30 +3642,30 @@ void calc_gamma_3Sp(const vector<pair<int, int>>& centralNeighboringSites, D2Vec
 			{	continue;	} 
 			//Skip this species if it is not updated at this time step (depending on advection timescale)
 			//*/
-			
+			double gamma_sum = 0.0; //Sum of gamma values for this species at site i (needed for SIMD reduction).
 			// Gamma for grazers (indexed 1)
 			if (s == 1)
 			{	
 				if( Rho_avg[2] < eps)
 				{	
-					#pragma omp simd reduction(+:gamma[s][i])
+					#pragma omp simd reduction(+:gamma_sum)
 					for(int k=0; k< eff_nR_Perp_size; k++)
-					{		gamma[s][i] += Rho_t[s-1][nR_Perp[k]];	}
+					{		gamma_sum += Rho_t[s-1][nR_Perp[k]];	}
 				} // No predators left
 				else
 				{
 					//if(Rho_avg[0] == 0)
 					//{	gamma[s][i] = 0.0;	continue; } // No vegetation 
 					//double rho_pred1 = 1/Rho_avg[2];
-					#pragma omp simd reduction(+:gamma[s][i])
+					#pragma omp simd reduction(+:gamma_sum)
 					for(int k=0; k< eff_nR_Perp_size; k++)
 					{
 								
-						gamma[s][i] += Rho_t[s-1][nR_Perp[k]]*(1 -Rho_t[2][nR_Perp[k]]*rho_inverse[2]);	
+						gamma_sum += Rho_t[s-1][nR_Perp[k]]*(1 -Rho_t[2][nR_Perp[k]]*rho_inverse[2]);	
 					}
 				// RECALL : rho_inverse[s] = 1/Rho_avg[s]
 				}
-				gamma[s][i] = (gamma[s][i]*rho_inverse[s-1])/(eff_nR_Perp_size);	
+				gamma[s][i] = (gamma_sum*rho_inverse[s-1])/(eff_nR_Perp_size);	
 
 			}
 			if(s == 2)
@@ -3356,23 +3673,23 @@ void calc_gamma_3Sp(const vector<pair<int, int>>& centralNeighboringSites, D2Vec
 				
 				if( Rho_avg[0] < eps)
 				{	
-					#pragma omp simd reduction(+:gamma[s][i])	
+					#pragma omp simd reduction(+:gamma_sum)	
 					for(int k=0; k< eff_nR_Perp_size; k++)
-					{		gamma[s][i] += Rho_t[s-1][nR_Perp[k]];	}
+					{		gamma_sum += Rho_t[s-1][nR_Perp[k]];	}
 				} // No vegetation left
 				else
 				{
 					//if(Rho_avg[1] < eps)
 					//{	gamma[s][i] = 0.0;	continue; } // No grazers left.
 					//double rho_veg1 = 1/Rho_avg[0];
-					#pragma omp simd reduction(+:gamma[s][i])
+					#pragma omp simd reduction(+:gamma_sum)
 					for(int k=0; k< eff_nR_Perp_size; k++)
 					{
-						gamma[s][i] += Rho_t[s-1][nR_Perp[k]]*(1 -Rho_t[0][nR_Perp[k]]*rho_inverse[0]);	
+						gamma_sum += Rho_t[s-1][nR_Perp[k]]*(1 -Rho_t[0][nR_Perp[k]]*rho_inverse[0]);	
 					}
 				// RECALL : rho_inverse[s] = 1/Rho_avg[s]
 				}
-				gamma[s][i] = (gamma[s][i]*rho_inverse[s-1])/(eff_nR_Perp_size);		
+				gamma[s][i] = (gamma_sum*rho_inverse[s-1])/(eff_nR_Perp_size);		
 			}
 
 			if(gamma[s][i] > 1)
@@ -3396,7 +3713,7 @@ void calc_gamma_3Sp(const vector<pair<int, int>>& centralNeighboringSites, D2Vec
 
 void rietkerk_Dornic_2D_MultiSp(D2Vec_Double &Rho, vector <double> &t_meas, double t_max, double a, double c, double gmax, double alpha, double rW, double W0, 
 	double (&D)[Sp], double (&v)[SpB], double (&K)[3], double sigma[], double a_st, double a_end, double a_c, double (&A)[SpB][SpB], double (&H)[SpB][SpB], double (&E)[SpB], double (&M)[SpB], double pR[], 
-	int (&dtV)[SpB], double clow[], double dt, double dx, double dP, int r, int g, double Gstar /* =-1.*/, double Vstar /* = -1.*/)
+	int (&dtV)[SpB], double clow[], double dt, double dx, double dP, int r, int g, FFTW3_CentralPlanner& fft_central_plan, double Gstar /* =-1.*/, double Vstar /* = -1.*/)
 {
 	int thrID; //Unique ID for each thread, used for saving files.
 	double epsilon = 1.0e-12; //Small number to avoid division by zero.
@@ -3415,6 +3732,76 @@ void rietkerk_Dornic_2D_MultiSp(D2Vec_Double &Rho, vector <double> &t_meas, doub
 	sort(r_frac.begin(), r_frac.end(), [](std::pair<double, int> &a, std::pair<double, int> &b) 
 				{ return a.first > b.first; });
 	std::vector<std::pair<int, int>> origin_Neighbourhood = computeNeighboringSitesCentral(int(r_max_effective));
+
+	int nR_Perp_length = origin_Neighbourhood.size();
+
+	#if defined(BARRACUDA) && SPB > 1
+	
+	// CUDA code, set up memory pointers and allocate memory on the GPU (parralel processing for advdiff_FKE_MultiSp() function)
+	double* d_Rho_dt, * d_Rho_tsar, * d_gamma; std::pair<double, double>* d_v_eff;
+	//double *d_sigD_ScaleBounds, *d_sigvD_ScaleBounds; // Pointers to the sigma bounds for the Gaussian stencils.
+	//double *mu_vel_prefac; // Defined as constant arrays now.
+	// RECALL: SpB = Sp - 2; Sp_NV = Sp - 3; // Number of consumers.
+	// Allocate memory on the GPU for the various arrays.
+	cudaMalloc(&d_Rho_dt, SpB * g * g * sizeof(double)); // Stores the curr population densities of consumers.
+	cudaMalloc(&d_Rho_tsar, Sp_NV * g * g * sizeof(double)); // Stores the updated population densities of consumers.
+	cudaMalloc(&d_gamma, Sp_NV * g * g * sizeof(double)); // Stores the gamma values for the consumers.
+	cudaMalloc(&d_v_eff, Sp_NV * g * g * sizeof(std::pair<double, double>)); // Stores the effective velocities for the consumers.
+	//cudaMalloc(&d_sigD_ScaleBounds, Sp_NV*sizeof(double)); // Stores the sigma bounds for the Gaussian stencils.
+	//cudaMalloc(&d_sigvD_ScaleBounds, Sp_NV*sizeof(double)); // Stores the sigma bounds for the Gaussian stencils.
+	//cudaMalloc(&mu_vel_prefac, Sp_NV*sizeof(double)); // Stores the mu_vel_prefactor[] array.
+
+	// Check if memory allocation was successful.
+	if (d_Rho_dt == NULL || d_Rho_tsar == NULL || d_gamma == NULL || d_v_eff == NULL)
+	{
+		std::cerr << "Memory allocation failed on the GPU for the various arrays in rietkerk_DorFPE_2D_MultiSp() function. Exiting .... \n";
+		exit(1);
+	}
+	// Copy origin_Neighbourhood to global memory on the GPU.
+	int2* d_origin_Neighbourhood;
+	std::vector<int2> central_neighbours(origin_Neighbourhood.size());
+    for (int k = 0; k < origin_Neighbourhood.size(); k++) 
+	{
+        central_neighbours[k].x = origin_Neighbourhood[k].first;
+        central_neighbours[k].y = origin_Neighbourhood[k].second;
+    }
+	cudaMalloc(&d_origin_Neighbourhood, central_neighbours.size() * sizeof(int2));
+	cudaMemcpy(d_origin_Neighbourhood, central_neighbours.data(), 
+				central_neighbours.size() * sizeof(int2), cudaMemcpyHostToDevice);
+	
+	double *d_rho_inverse; int *d_eff_sizes;
+	cudaMalloc(&d_rho_inverse, SpB * sizeof(double));
+	cudaMalloc(&d_eff_sizes, SpB * sizeof(int));
+
+	vector <DoubleIntPair> dr_frac_copy(SpB, { 0.0, 0 });
+	for(int s = 0; s < SpB; s++)
+	{
+		dr_frac_copy[s].first = r_frac[s].first; dr_frac_copy[s].second = r_frac[s].second;
+	}
+	//cudaMemcpyToSymbol(d_r_frac, dr_frac_copy.data(), 
+	//			dr_frac_copy.size() * sizeof(DoubleIntPair), 0, cudaMemcpyHostToDevice);
+
+	cudaError_t err;
+
+	err = copyToDeviceConstantMemory_GammaSweepTerms(dr_frac_copy.data());
+
+	if (err != cudaSuccess) {
+		cerr << "CUDA error in copyToDeviceConstantMemory_AdvTerms: " << cudaGetErrorString(err) << std::endl;
+		exit(EXIT_FAILURE);
+	}
+
+	if (d_origin_Neighbourhood == NULL || d_rho_inverse == NULL || d_eff_sizes == NULL)
+	{
+		std::cerr << "Memory allocation failed on the GPU for the movement arrays in dP_Dornic_2D_MultiSp() function. Exiting .... \n";
+		exit(1);
+	}
+	//Finally report Gaussian stencil values on device using reportGaussianStencilValues() function.
+	if (omp_get_thread_num() == 1)
+	{
+		reportPerceptionArrays_Interface(d_origin_Neighbourhood, d_rho_inverse, d_eff_sizes, nR_Perp_length, r_max_effective, g);
+	}
+	#endif
+
 
 	if(omp_get_thread_num()== 1)
 	{
@@ -3535,7 +3922,7 @@ void rietkerk_Dornic_2D_MultiSp(D2Vec_Double &Rho, vector <double> &t_meas, doub
 
 		//init_randbistableframe(Rho_dt, g*g, a, a_c,  perc, chigh, clow); // Returns a frame with random speckles of high and low density.
 
-		///** EXPRT-TK INITIALISATIONS 
+		/** EXPRT-TK INITIALISATIONS 
 		// MFT PERTURBATION BASED FRAME INITIALISATION
 		#if defined(INIT) && INIT == 0
 			// HOMOGENEOUS FRAME INITIALISATION
@@ -3568,7 +3955,7 @@ void rietkerk_Dornic_2D_MultiSp(D2Vec_Double &Rho, vector <double> &t_meas, doub
 		#endif
 		// */
 
-		/**  GAUSSIAN FRAME INITIALISATION  
+		///**  GAUSSIAN FRAME INITIALISATION  
 		// Initialise vector <double> amp to elements of clow[].
 		vector <double> amp(Sp, 500.0);  //Setting amplitude of gaussian distributions of vegetation to 500.
 		for (int s=0; s< Sp; s++)
@@ -3736,8 +4123,8 @@ void rietkerk_Dornic_2D_MultiSp(D2Vec_Double &Rho, vector <double> &t_meas, doub
 			if(t == 0 || t >= frame_tmeas[frame_index] -dt/2.0 && t < frame_tmeas[frame_index] +dt/2.0)
 			{
 				// Saving frames to file at given time points.
-				if(frame_index >= frame_tot_iter -10 &&  frame_index <= frame_tot_iter-1  ||  t >= 50000 && t <= 150000 
-					|| t >= 20 && t <= 15000 || t== 0)
+				if(frame_index >= frame_tot_iter -10 &&  frame_index <= frame_tot_iter-1  ||  t >= 60000 && t <= 150000 
+					|| t >= 50 && t <= 15000 || t== 0)
 				{
 					save_framefileswrapper(frame_index, frame_tot_iter, j, thrID, t, dt, dx, Rho_dt, DRho, rho_rep_avg_var,
 					frame_tmeas, gamma, v_eff, t_max, a, c, gmax, alpha, rW, W0, D, v, K, sigma, a_st, a_end, a_c, A,H,E,M, 
@@ -3745,10 +4132,10 @@ void rietkerk_Dornic_2D_MultiSp(D2Vec_Double &Rho, vector <double> &t_meas, doub
 				}
 				frame_index+=1;
 			}
+			
 			//Basic Dornic  Integration of Linear & Stochastic Term
 			//CREDITS: DORNIC. ONLY LIVING MATTER EXPERIENCES DORNIC INTEGRATION.
 			//First up vegetation.
-
 			for(int s=0; s< 1; s++)
             {
 				for(int i=0;i<Rho_dt[0].size();i++)
@@ -3809,10 +4196,6 @@ void rietkerk_Dornic_2D_MultiSp(D2Vec_Double &Rho, vector <double> &t_meas, doub
 			} // End of Vegetation Integration
 
 			
-
-
-
-			
 			// Book-keeping for determining gamma_i for higher order species. Calculating Rho averages per species at each time step.
 			// Compute ONLY IF SPB > 1
 			#if SPB > 1
@@ -3828,6 +4211,9 @@ void rietkerk_Dornic_2D_MultiSp(D2Vec_Double &Rho, vector <double> &t_meas, doub
 			double nR_fac = 1 - rhox_num_veg/(g*g); //Factor to reduce the number of neighbours for gamma_i estimation
 			if (nR_fac < 0.35)
 			{	nR_fac = 0.35; }
+			int nR_Perp_length = int(nR_fac*nR_fac*origin_Neighbourhood.size());
+			nR_Perp_length < 1 ? nR_Perp_length = 1 : nR_Perp_length = nR_Perp_length; 
+			// At least one nearest neighbor (the site itself) is considered.
 			#endif
 
 			
@@ -3843,15 +4229,58 @@ void rietkerk_Dornic_2D_MultiSp(D2Vec_Double &Rho, vector <double> &t_meas, doub
 			#endif
 			//*/
 			
-
+			#if defined(BARRACUDA) && SPB > 1
+			//Transfer Rho_dt, gamma and v_eff to device memory.
 			
+			for (int s = 0; s < 1; s++)
+			{	cudaMemcpy(d_Rho_dt, Rho_dt[s].data(), g * g * sizeof(double), cudaMemcpyHostToDevice);		}
+			
+			int rho_offset = 0;
+			for (int s = 1; s < SpB; s++)
+			{
+				cudaMemcpy(d_Rho_dt + rho_offset + g * g, Rho_dt[s].data(), g * g * sizeof(double), cudaMemcpyHostToDevice);
+				cudaMemcpy(d_gamma + rho_offset, gamma[s].data(), g * g * sizeof(double), cudaMemcpyHostToDevice);
+				//transfer_castedVec_to_device(gamma[s].data(), d_gamma + rho_offset, g * g);
+				cudaMemcpy(&d_v_eff[(s - 1) * g * g], v_eff[s].data(), g * g * sizeof(std::pair<double, double>), cudaMemcpyHostToDevice);
+				rho_offset += g * g;
+			}
+			// Reset Rho_tsar on device memory to 0.0
+			//cudaMemset(d_Rho_tsar, 0.0, Sp_NV * g * g * sizeof(double));
 
+			if (counter % 50000 == 1)
+			{
+				stringstream m6_2;     //To make cout thread-safe as well as non-garbled due to race conditions
+				m6_2 << "CUDA TRANSFER COMPLETE FOR HIGHER ORDER SPECIES AT TIME [t, thr]\t" << t << " , " << omp_get_thread_num() << "\n";
+				cout << m6_2.str(); cerr << m6_2.str();
+				//if (omp_get_thread_num() == 2)
+				//	reportPerceptionArrays_Interface(d_origin_Neighbourhood, d_rho_inverse, d_eff_sizes, nR_Perp_length, r_max_effective, g);
+			}
+
+			// Launch CUDA kernel to compute gamma and velocity.
 			#if SPB == 3
-				calc_gamma_3Sp_NonRefugia(origin_Neighbourhood, DRho, gamma, Rhox_avg, r_frac, dtV_counter, nR_fac, r_max_effective, g);
-			#elif SPB == 2
-				calc_gamma_2Sp_NonRefugia(origin_Neighbourhood, DRho, gamma, Rhox_avg, r_frac, nR_fac, r_max_effective, g);
-			#endif 
-			//Calculates gamma for each species at each site.
+				calc_gamma_vel_NonRefugia_CUDA(d_origin_Neighbourhood, d_Rho_dt, d_gamma, d_v_eff,
+				d_rho_inverse, d_eff_sizes, Rhox_avg, r_frac, dtV_counter, nR_Perp_length, r_max_effective, g);
+			#endif
+			// Copy results back to host memory.
+			rho_offset = 0;
+			for (int s = 1; s < SpB; s++)
+			{
+				cudaMemcpy(gamma[s].data(), d_gamma + rho_offset, g * g * sizeof(double), cudaMemcpyDeviceToHost);
+				//transfer_castedVec_to_host(d_gamma + rho_offset, gamma[s].data(), g*g);
+				cudaMemcpy(v_eff[s].data(), &d_v_eff[(s - 1) * g * g], g * g * sizeof(std::pair<double, double>), cudaMemcpyDeviceToHost);
+				rho_offset += g * g;
+			}
+			#else
+			//Compute gamma and velocity for higher order species using CPU implementation.
+				#if SPB == 3
+					//calc_gamma_3Sp_NonRefugia(origin_Neighbourhood, DRho, gamma, Rhox_avg, r_frac, dtV_counter, nR_fac, r_max_effective, g);
+					calc_gamma_3Sp_NonRefugia_FFT(DRho, gamma, Rhox_avg, r_frac, dtV_counter, nR_fac, r_max_effective, g, fft_central_plan);
+				#elif SPB == 2
+					//calc_gamma_2Sp_NonRefugia(origin_Neighbourhood, DRho, gamma, Rhox_avg, r_frac, dtV_counter, nR_fac, r_max_effective, g);
+					calc_gamma_2Sp_NonRefugia_FFT(DRho, gamma, Rhox_avg, r_frac, dtV_counter, nR_fac, r_max_effective, g, fft_central_plan);
+				#endif 
+				//Calculates gamma for each species at each site.
+			#endif
 
 
 			#if defined(DEBUG)
@@ -4185,9 +4614,8 @@ void rietkerk_Dornic_2D_MultiSp(D2Vec_Double &Rho, vector <double> &t_meas, doub
 
 			if(counter%40000 ==1)
 			{
-				//Find memory usage and time taken for every 50000 iterations.
 				//size_t currentSize = getCurrentRSS( ); //Check Memory usage.
-				//size_t peakSize    = getPeakRSS( );
+				//size_t peakSize    = getPeakRSS( ); //Find memory usage and time taken for every 50000 iterations.
 				auto end_t = high_resolution_clock::now();
 				auto elapsed_min = duration_cast<minutes>(end_t-start_t);
 				// Reset the clock
@@ -4197,10 +4625,7 @@ void rietkerk_Dornic_2D_MultiSp(D2Vec_Double &Rho, vector <double> &t_meas, doub
 				//<< " ,with current size in MB: " << currentSize/(1024.0*1024.0) << " and Peak Size (in MB): " << peakSize/(1024.0*1024.0) 
 				<< " and time taken for " << counter << " iterations: " << elapsed_min.count() << " min." <<  "\n"; cout << m7.str();
 				errout.open(thr, std::ios_base::app); errout << m7.str(); errout.close();
-
 				//Report syst every 50000 iterations.
-			
-
 			}
 
 			if(lo == -1)
@@ -4350,6 +4775,12 @@ void rietkerk_Dornic_2D_MultiSp(D2Vec_Double &Rho, vector <double> &t_meas, doub
 
 	} // End of r loop.
 
+	// Free up all device memory.
+	#if defined(BARRACUDA)
+	cudaFree(d_Rho_dt); cudaFree(d_Rho_tsar); cudaFree(d_gamma); cudaFree(d_v_eff); 
+	cudaFree(d_origin_Neighbourhood); cudaFree(d_rho_inverse); cudaFree(d_eff_sizes);
+	#endif
+
 	size_t currentSize = getCurrentRSS( ); //Check Memory usage.
 	size_t peakSize    = getPeakRSS( );
 	stringstream m9;
@@ -4392,8 +4823,8 @@ void first_order_critical_exp_delta_stochastic_MultiSp(int div, double t_max, do
 	// Store linspace values in frame_tmeas.
 	
 
-    vector <double> t_measure = logarithm10_time_bins(t_max, 1*dt);
-	//vector <double> t_measure = linspace(20, 6000, 300);
+    //vector <double> t_measure = logarithm10_time_bins(t_max, 1*dt);
+	vector <double> t_measure = linspace(40, 1200, 30);
 	// Computes and returns ln-distributed points from t= 10^{0} to log10(t_max) (the latter rounded down to 1 decimal place) 
   	// Returns time-points measured on a natural logarithmic scale from e^{2} to e^ln(t_max) rounded down to one decimal place.
 
@@ -4425,11 +4856,15 @@ void first_order_critical_exp_delta_stochastic_MultiSp(int div, double t_max, do
 
 	// Use switchsort_and_bait() to swap values in frame_tmeas b/w [50, 400] with linspace(50, 400, 8) 
 	// and [400, 1200] with linspace(400, 1200, 9).
-	frame_tmeas = switchsort_and_bait<double>(frame_tmeas, 50, 400, 8, "linspace", true);
-	frame_tmeas = switchsort_and_bait<double>(frame_tmeas, 400, 1200, 9, "linspace", true);
+	//frame_tmeas = switchsort_and_bait<double>(frame_tmeas, 50, 400, 8, "linspace", true);
+	//frame_tmeas = switchsort_and_bait<double>(frame_tmeas, 400, 1200, 9, "linspace", true);
+	//frame_tmeas = switchsort_and_bait<double>(frame_tmeas, 2000, 10000, 4, "linspace", true);
 
 	// For correlation measurement, add linear window from 20 to 6000, with 300 points (spaced 20 apart).
 	//frame_tmeas = switchsort_and_bait<double>(frame_tmeas, 20, 6000, 300, "linspace", true);
+
+	// For spreading experiments, add linear window from 40 to 1200, with 30 points (spaced 40 apart).
+	frame_tmeas = switchsort_and_bait<double>(frame_tmeas, 40, 1200, 30, "linspace", true);
 
 
 	if(t_measure[t_measure.size()-1] > 90000)
@@ -4439,7 +4874,7 @@ void first_order_critical_exp_delta_stochastic_MultiSp(int div, double t_max, do
 		//frame_tmeas.erase(std::remove_if(frame_tmeas.begin(), frame_tmeas.end(), 
 		//[](double x){return (x > 50000.0 && x < 100000.0);}), frame_tmeas.end());
 		// Create linear window from 50000 to 100000, with 26 points (spaced 2500 apart).
-		vector <double> t_frame_linearwindow = linspace(50000, 100000, 26); 
+		vector <double> t_frame_linearwindow = linspace(60000, 100000, 21); 
 		// Rounded down to 1 decimal place.
 		// Insert the linear window to frame_tmeas vector after the element in frame_tmeas that is just less than the first element in t_frame_linearwindow.
 		auto it = std::upper_bound(frame_tmeas.begin(), frame_tmeas.end(), t_frame_linearwindow[0]);
@@ -4476,19 +4911,18 @@ void first_order_critical_exp_delta_stochastic_MultiSp(int div, double t_max, do
 	rng.seed(rd); // Seed the generator
 	std::uniform_int_distribution<int> unif_int(0, 30); //Use this to generate random numbers between 0 and 30.
 
+	int r_max = (*max_element(pR, pR + SpB)) / dx; // Maxmimum perception radius across all species in units of lattice sites.
+	cout << "Maximum Perception Radius in Lattice Sites is: " << r_max << endl;
 	
   	//usleep will pause the program in micro-seconds (1000000 micro-seconds is 1 second)
     const int microToSeconds = 1000000;   
     const double delay1 = unif_int(rng)* microToSeconds;     //5 seconds
-
 	// Random delay to stagger the start of the parallel threads.
 	usleep(static_cast<int>(delay1)); //Sleep for delay1 microseconds
 	//std::this_thread::sleep_for(std::chrono::microseconds(static_cast<int>(delay1))); //Sleep for delay1 microseconds
-
-    
     cout<<"Delay 1 in progress... ("<<delay1/microToSeconds<<"s)"<<endl;
 	std::vector<vector <double>> vec;
-  // Stores collated output from parallel method calls in proper ascending order of p values.
+  	// Stores collated output from parallel method calls in proper ascending order of p values.
 
   	size_t currentSize = getCurrentRSS( ); //Check Memory usage.
 	size_t peakSize    = getPeakRSS( );
@@ -4496,6 +4930,14 @@ void first_order_critical_exp_delta_stochastic_MultiSp(int div, double t_max, do
 	cout << "On initialisation, current size in MB: " << currentSize/(1024.0*1024.0) << " and Peak Size (in MB): " << peakSize/(1024.0*1024.0) << endl;
 
 	auto start = high_resolution_clock::now();
+	//fftw_init_threads();
+	
+	// Create temporary workspace for kernel precomputation
+	if(SpB > 1)
+	{
+		// Create temporary planner and then use it to precompute all FFT kernels for KHats
+		FFTW3_CentralPlanner fiveyrplan(g); precompute_FFT_KHat_kernels(fiveyrplan, g, r_max);
+	} //Auto destructor will clean up planner after this block.
 
 	int nProcessors=omp_get_max_threads();
 	if(nProcessors > 32)
@@ -4507,8 +4949,18 @@ void first_order_critical_exp_delta_stochastic_MultiSp(int div, double t_max, do
 	//double perc = 0.015; double c_high[Sp] ={dP, p0j, p0m}; double c_low[Sp] ={p0i, p0j, p0m};
 
 	#pragma omp parallel
-  {
+  	{
       std::vector<vector<double>> vec_private;
+	  FFTW3_CentralPlanner* fftw_central_planner = nullptr;
+	
+	  #pragma omp critical
+	  {
+		#if SPB > 1
+		fftw_central_planner = new FFTW3_CentralPlanner(g); // Central planner for multi-species simulations.
+		#else
+		fftw_central_planner = new FFTW3_CentralPlanner(1); // Central planner is not necessary for single species, but kept for code uniformity.
+		#endif
+	  }
 
       //Grants a static schedule with a chunk size of 1.
       /* Based on procedure suggested in:
@@ -4530,11 +4982,10 @@ void first_order_critical_exp_delta_stochastic_MultiSp(int div, double t_max, do
 		 * Namely CExpRho_a is structured as:
 		 * | 	a		|    t 		|     <<Rho1(t)>>x,r			|    Var[<Rho1(t)>x],r    |
 		**/
-		rietkerk_Dornic_2D_MultiSp(CExpRho_a, t_measure, t_max, a_space[i], c, gmax, alpha, rW, W0, D, v, K , sigma, a_start, a_end, a_c, A,H,E,M, pR, dtV, clo, dt, dx, dP, r, g, Gstar, Vstar);
+		rietkerk_Dornic_2D_MultiSp(CExpRho_a, t_measure, t_max, a_space[i], c, gmax, alpha, rW, W0, D, v, K , sigma, a_start, a_end, a_c, A,H,E,M, pR, dtV, clo, dt, dx, dP, r, g, *fftw_central_planner, Gstar, Vstar);
 		//RK4_Wrapper_2D(CExpRho_a, t_measure, t_max, a_space[i], c, gmax, alpha, d, rW, W0, D, K , a_start, a_end, dt, dx, dP, r, g);
 		//expanded_percolationDornic_2D(CExpRho_a, t_measure, Rho_0,  t_max, a_space[i], b, c, D, sigma, dt, dx, r, g);
         //crtexp_DP_Basic(grid_size, comp_data, p_space[i], r_init, length);
-		//void rietkerk_Dornic_2D_MultiSp(D2Vec_Double &Rho, vector <double> &t_meas, double t_max, double a, double c, double gmax, double alpha, double rW, double W0,  double D[], double v[], double K[], double sigma[], double a_st, double a_end, double a_c, double A[SpB][SpB], double H[SpB][SpB], double E[], double M[], double pR[], chigh[],  clow[],  dt, dx, dP,  r, g)
 
         vec_private.insert(vec_private.end(), CExpRho_a.begin(), CExpRho_a.end());
 		vector<vector <double>>().swap(CExpRho_a);
@@ -4558,7 +5009,17 @@ void first_order_critical_exp_delta_stochastic_MultiSp(int div, double t_max, do
       }
 	  vector<vector <double>>().swap(vec_private);
 	  // Remove dynamic vectors from memory and free up allocated space.
-  } //End of Pragma.
+	  // Finally clean up the FFTW3 Central Planner
+	  delete fftw_central_planner;
+  	} //End of Pragma.
+  	cout << "Finished all parallel computations." << endl;
+
+	// Finally clean up the shared precomputed FFTW3 kernel cache (kHat_kernel_FFT_cache inline std::map<int, fftw_complex*>)
+	// Do this by iterating over all the keys in the map and freeing up the allocated fftw_complex* arrays.
+	for (auto const& fft_cache_pair_R : kHat_kernel_FFT_cache)
+		fftw_free(fft_cache_pair_R.second);
+	
+    //fftw_cleanup_threads();
 
 	auto stop = high_resolution_clock::now();
 	auto duration = duration_cast<seconds>(stop - start);

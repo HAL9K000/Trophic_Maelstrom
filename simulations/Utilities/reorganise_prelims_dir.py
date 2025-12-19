@@ -92,14 +92,13 @@ dP = 10000
 Geq = 4.802 # Optional. If Geq is not used in the subdirectory name, set Geq = "NA".
 Veq = 7.4774  # Optional. If Veq is not used in the subdirectory name, set Veq = "NA".
 L= [128]
-tmin = 100000; tmax = None; 
+tmin = None; tmax = None; 
 # Optional. If tmin and tmax are not provided, set tmin = None and tmax = None.
 indx_vals_t = -5; dt =0.11
 #Extract n largest values of T (within the subset [tmin, tmax] if provided) if indx_vals_t = -n, 
 # n smallest values of T if indx_vals_t = n.
 CPU_Ncores = 1; # Number of CPU cores to be used by the script (monothreaded by default).
 dynamic_inspect = False;    # Set to True to stop script periodically and inspect values of parameters and outputs.
-
 
 
 def set_prelims_inputs():

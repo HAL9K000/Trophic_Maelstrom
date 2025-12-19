@@ -11,3 +11,8 @@ inline std::string prelimheader = " a , r, L, t , <<W(x; t)>_x>_r, <<O(x; t)>_x>
 inline const std::string gammaheader="\n";
 inline std::string movmheader ="\n";
 
+#if defined(__CUDACC__) || defined(BARRACUDA)
+// Creating constexpr variables to be used in the CUDA kernels.
+inline const int CuSpB = 1; // Sp - 2, biotic species in the system.
+inline const int CuSpNV = 0; // Sp - 3, biotic species in the system.
+#endif

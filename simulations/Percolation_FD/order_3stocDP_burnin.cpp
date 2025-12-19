@@ -17,7 +17,7 @@ int main(int argc, char *argv[])
   double a_start, a_end; double r; double dP; // Kick for high initial state
   int g, div;
 
-  dx= 0.1 ; //From Bonachela et al 2015 (in km)
+  dx= 0.01 ; //From Bonachela et al 2015 (in km)
   double mGrazer; double mPredator; // Mass of grazer and predator in kg.
   // ASSUMING MASS OF  GRAZER = 20 kg, MASS OF PREDATOR = 100 kg.
   mGrazer = 20; mPredator = 100;
@@ -34,9 +34,10 @@ int main(int argc, char *argv[])
   double k0, k1, k2; double d0, d1, d2, d3, d4; double s0, s1, s2; double v1, v2; double dtv1, dtv2;
   
   
-  d0 = 0.00025/24.0; d1=0.0298; d2= 0.05221; d3 = 0.00025/24.0; d4= 0.025/24.0; s2 = 3; //From Bonachela et al 2015 (in km^2/hr) and general D allometry.
-  s0 = sqrt(d0/(dx*dx)); // ~ D0/(dx)^2 (in kg^{0.5}/(km hr))
-  s1 = 1; // ~ D/(dx)^2 (in kg^{0.5}/(km hr))
+  d0 = 0.00025/24.0; d1=0.0298; d2= 0.05221; d3 = 0.00025/24.0; d4= 0.025/24.0; //s2 = 3; //From Bonachela et al 2015 (in km^2/hr) and general D allometry.
+  s0 = 1*sqrt(d0/(dx*dx)); // ~ D0/(dx)^2 (in kg^{0.5}/(km hr))
+  s1 = 1*sqrt(d1/(dx*dx)); // 1 ~ D/(dx)^2 (in kg^{0.5}/(km hr))
+  s2 = 1*sqrt(d2/(dx*dx)); // 3 ~ D/(dx)^2 (in kg^{0.5}/(km hr))
   
   
   // Allometric scaling for velocity: 

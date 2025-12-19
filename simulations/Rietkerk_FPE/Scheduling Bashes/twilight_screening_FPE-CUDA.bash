@@ -85,23 +85,27 @@ fi
 # Store the current directory
 curr_dir=$(pwd)
 
+#Get timestamp at the initialisation of the script in format DD{Month}YYYY
+timestamp=$(date +"%d%b%Y")
+echo "Starting screen sessions for jobs in $1 with SpB=$2 and Init_Types=$3 at $timestamp ...."
+
 # First, create the object files for the cpp scripts and for the CUDA scripts
-if [ $INIT -ne 2 ]; then
+#if [ $INIT -ne 2 ]; then
     # Compile order_${SPB}stoc_unity_rietkerk.cpp
-    bash -c "cd .. ; g++-14 -DSPB=${SPB} -DINIT=${INIT} -DMV_INVARIANCE=${MV_INVARIANCE} -DBARRACUDA -c order_${SPB}stoc_unity_rietkerk.cpp -fPIE -fopenmp -std=c++20 -I/usr/local/cuda/include"
-else
-    bash -c "cd .. ; g++-14 -DSPB=${SPB} -DINIT=${INIT} -DMV_INVARIANCE=${MV_INVARIANCE} -DBARRACUDA -c order_${SPB}stoc_burnin_rietkerk.cpp -fPIE -fopenmp -std=c++20 -I/usr/local/cuda/include"
-fi
-echo "Created object file for order_${SPB}stoc ... script"
+#    bash -c "cd .. ; g++-14 -DSPB=${SPB} -DINIT=${INIT} -DMV_INVARIANCE=${MV_INVARIANCE} -DBARRACUDA -c order_${SPB}stoc_unity_rietkerk.cpp -O3 -march=native -fPIE -fopenmp -std=c++20 -I/usr/local/cuda/include"
+#else
+#    bash -c "cd .. ; g++-14 -DSPB=${SPB} -DINIT=${INIT} -DMV_INVARIANCE=${MV_INVARIANCE} -DBARRACUDA -c order_${SPB}stoc_burnin_rietkerk.cpp -O3 -march=native -fPIE -fopenmp -std=c++20 -I/usr/local/cuda/include"
+#fi
+#echo "Created object file for order_${SPB}stoc ... script"
 # Next, compile the main cpp script
-bash -c "cd .. ; g++-14 -DSPB=${SPB} -DINIT=${INIT} -DMV_INVARIANCE=${MV_INVARIANCE} -DBARRACUDA -c rietkerk_bjork_FKE.cpp -fPIE -fopenmp -std=c++20 -I/usr/local/cuda/include"
-echo "Created object file for rietkerk_bjork_FKE ... script"
+#bash -c "cd .. ; g++-14 -DSPB=${SPB} -DINIT=${INIT} -DMV_INVARIANCE=${MV_INVARIANCE} -DBARRACUDA -c rietkerk_bjork_FKE.cpp -O3 -march=native -fPIE -fopenmp -std=c++20 -I/usr/local/cuda/include"
+#echo "Created object file for rietkerk_bjork_FKE ... script"
 
 #Next create object files for the CUDA scripts, with ARCH-SM flag if specified, else no flag
 if [ -z "$ARCH_SM" ]; then
-    bash -c "cd .. ; nvcc -c -o kernel_FKE.o  kernel_advdiff_FKE2D.cu -std=c++20;"
+    bash -c "cd .. ; nvcc -O3 --use_fast_math -c -o kernel_FKE.o  kernel_advdiff_FKE2D.cu -std=c++20;"
 else
-    bash -c "cd .. ; nvcc -arch=sm_${ARCH_SM} -c -o kernel_FKE.o  kernel_advdiff_FKE2D.cu -std=c++20;"
+    bash -c "cd .. ; nvcc -arch=sm_${ARCH_SM} -O3 --use_fast_math -c -o kernel_FKE.o  kernel_advdiff_FKE2D.cu -std=c++20;"
 fi
 echo "Created object file for kernel_FKE ... script"
 
@@ -152,12 +156,48 @@ start_screen(){
     
     if ! screen -list | grep -q "${screen_names[$screen_index]}"; then
         # Start a new screen session and run the job
+        # First creating common variables
+        # Common variables
+        local screen_name="${screen_names[$screen_index]}"
+        local main_obj="${screen_name}_rietkerk_bjork_FKE.o"
+        local executable="${screen_name}_cuFKE${spb}.out"
+        local compile_flags="-DSPB=${spb} -DINIT=${init} -DMV_INVARIANCE=${mvinv} -DBARRACUDA"
+        local opt_flags="-O3 -march=native -fPIE -fopenmp -std=c++20"
+        local cuda_flags="-I/usr/local/cuda/include -L/usr/local/cuda/lib64 -lcudart -lcudadevrt -Wl,-rpath=/usr/local/cuda/lib64"
+        # Define source file and object file based on init type
+        local src_file
+        local order_obj
+        local params
         #Done by linking and compiling the object files, then running the executable
         if [ $init -ne 2 ]; then
-            screen -dmS ${screen_names[$screen_index]} bash -c "cd .. ; nvcc -arch=sm_${arch_sm} -o ${screen_names[$screen_index]}_cuFKE${spb}.out rietkerk_bjork_FKE.o order_${spb}stoc_unity_rietkerk.o kernel_FKE.o -Xcompiler -fopenmp -std=c++20 -I/usr/local/cuda/include -L/usr/local/cuda/lib64 -lcudart; ./${screen_names[$screen_index]}_cuFKE${spb}.out $p1 $p2 $p3 $p4 $p5 $p6 $p7 $p8 $p9 $p10 $p11 $p12 &> stderr_${screen_names[$screen_index]}.txt; cd $curr_dir"
+            src_file="order_${spb}stoc_unity_rietkerk.cpp"
+            order_obj="${screen_name}_order_${spb}stoc_unity.o"
+            params="$p1 $p2 $p3 $p4 $p5 $p6 $p7 $p8 $p9 $p10 $p11 $p12"
+            #screen -dmS ${screen_names[$screen_index]} bash -c "cd .. ; nvcc -arch=sm_${arch_sm} -O3 -o ${screen_names[$screen_index]}_cuFKE${spb}.out rietkerk_bjork_FKE.o order_${spb}stoc_unity_rietkerk.o kernel_FKE.o -Xcompiler -fopenmp -O3 -march=native -std=c++20 -I/usr/local/cuda/include -L/usr/local/cuda/lib64 -lcudart; ./${screen_names[$screen_index]}_cuFKE${spb}.out $p1 $p2 $p3 $p4 $p5 $p6 $p7 $p8 $p9 $p10 $p11 $p12 &> stderr_${screen_names[$screen_index]}.txt; cd $curr_dir"
+            #screen -dmS ${screen_names[$screen_index]} bash -c "cd .. ; g++-14 -DSPB=${spb} -DINIT=${init} -DMV_INVARIANCE=${mvinv} -DBARRACUDA -o ${screen_names[$screen_index]}_order_${spb}stoc_unity.o -c order_${spb}stoc_unity_rietkerk.cpp -O3 -march=native -fPIE -fopenmp -std=c++20 -I/usr/local/cuda/include; g++-14 -DSPB=${spb} -DINIT=${init} -DMV_INVARIANCE=${mvinv} -DBARRACUDA -o ${screen_names[$screen_index]}_rietkerk_bjork_FKE.o -c rietkerk_bjork_FKE.cpp -O3 -march=native -fPIE -fopenmp -std=c++20 -I/usr/local/cuda/include; g++-14 -o ${screen_names[$screen_index]}_cuFKE${spb}.out ${screen_names[$screen_index]}_rietkerk_bjork_FKE.o ${screen_names[$screen_index]}_order_${spb}stoc_unity_rietkerk.o kernel_FKE.o -fopenmp -O3 -march=native -std=c++20 -I/usr/local/cuda/include -L/usr/local/cuda/lib64 -lcudart -lcudadevrt -Wl,-rpath=/usr/local/cuda/lib64; ./${screen_names[$screen_index]}_cuFKE${spb}.out $p1 $p2 $p3 $p4 $p5 $p6 $p7 $p8 $p9 $p10 $p11 $p12 &> stderr_${screen_names[$screen_index]}.txt; cd $curr_dir"
         else
-            screen -dmS ${screen_names[$screen_index]} bash -c "cd .. ; nvcc -arch=sm_${arch_sm} -o ${screen_names[$screen_index]}_cuFKE${spb}.out rietkerk_bjork_FKE.o order_${spb}stoc_burnin_rietkerk.o kernel_FKE.o -Xcompiler -fopenmp -std=c++20 -I/usr/local/cuda/include -L/usr/local/cuda/lib64 -lcudart; ./${screen_names[$screen_index]}_cuFKE${spb}.out $p1 $p2 $p3 $p4 $p5 $p6 $p7 $p8 $p9 $p10 $p11 $p12 $p13 &> stderr_${screen_names[$screen_index]}.txt; cd $curr_dir"
+            src_file="order_${spb}stoc_burnin_rietkerk.cpp"
+            order_obj="${screen_name}_order_${spb}stoc_burnin.o"
+            params="$p1 $p2 $p3 $p4 $p5 $p6 $p7 $p8 $p9 $p10 $p11 $p12 $p13"
+            #screen -dmS ${screen_names[$screen_index]} bash -c "cd .. ; nvcc -arch=sm_${arch_sm} -O3 -o ${screen_names[$screen_index]}_cuFKE${spb}.out rietkerk_bjork_FKE.o order_${spb}stoc_burnin_rietkerk.o kernel_FKE.o -Xcompiler -fopenmp -O3 -march=native -std=c++20 -I/usr/local/cuda/include -L/usr/local/cuda/lib64 -lcudart; ./${screen_names[$screen_index]}_cuFKE${spb}.out $p1 $p2 $p3 $p4 $p5 $p6 $p7 $p8 $p9 $p10 $p11 $p12 $p13 &> stderr_${screen_names[$screen_index]}.txt; cd $curr_dir"
+            #screen -dmS ${screen_names[$screen_index]} bash -c "cd .. ; g++-14 -DSPB=${spb} -DINIT=${init} -DMV_INVARIANCE=${mvinv} -DBARRACUDA -o ${screen_names[$screen_index]}_order_${spb}stoc_burnin.o -c order_${spb}stoc_burnin_rietkerk.cpp -O3 -march=native -fPIE -fopenmp -std=c++20 -I/usr/local/cuda/include; g++-14 -DSPB=${spb} -DINIT=${init} -DMV_INVARIANCE=${mvinv} -DBARRACUDA -o ${screen_names[$screen_index]}_rietkerk_bjork_FKE.o -c rietkerk_bjork_FKE.cpp -O3 -march=native -fPIE -fopenmp -std=c++20 -I/usr/local/cuda/include; g++-14 -o ${screen_names[$screen_index]}_cuFKE${spb}.out ${screen_names[$screen_index]}_rietkerk_bjork_FKE.o ${screen_names[$screen_index]}_order_${spb}stoc_burnin_rietkerk.o kernel_FKE.o -fopenmp -O3 -march=native -std=c++20 -I/usr/local/cuda/include -L/usr/local/cuda/lib64 -lcudart -lcudadevrt -Wl,-rpath=/usr/local/cuda/lib64; ./${screen_names[$screen_index]}_cuFKE${spb}.out $p1 $p2 $p3 $p4 $p5 $p6 $p7 $p8 $p9 $p10 $p11 $p12 $p13 &> stderr_${screen_names[$screen_index]}.txt; cd $curr_dir"
         fi
+
+        # Start the screen session, compile and run the scripts
+        screen -dmS $screen_name bash -c "
+        cd .. || exit 1
+        # Compile source files
+        g++-14 $compile_flags -o $order_obj -c $src_file $opt_flags -I/usr/local/cuda/include && \
+        g++-14 $compile_flags -o $main_obj -c rietkerk_bjork_FKE.cpp $opt_flags -I/usr/local/cuda/include && \
+        # Link executable
+        g++-14 -o $executable $main_obj $order_obj kernel_FKE.o \
+        -fopenmp -O3 -march=native -std=c++20 \
+        $cuda_flags && \
+        
+        # Run executable
+        ./$executable $params &> stderr_${screen_name}_${timestamp}.txt
+        
+        cd $curr_dir"
         screen_index=$((screen_index+1))
     else
         #echo "Screen session ${screen_names[$screen_index]} is already running. Using the next screen name."
@@ -179,3 +219,9 @@ for ((i=0; i<num_screens; i++)); do
     LINE=$(sed -n "$((i+2))p" $1)
     echo "Starting screen session ${screen_names[$((screen_idx-1))]} for job $i with parameters: $LINE"
 done
+
+
+#g++-14 -DSPB=3 -DINIT=0 -DMV_INVARIANCE=0 -DBARRACUDA -c order_3stoc_unity_rietkerk.cpp -O3 -march=native -fPIE -fopenmp -std=c++20 -I/usr/local/cuda/include
+#g++-14 -DSPB=3 -DINIT=0 -DMV_INVARIANCE=0 -DBARRACUDA -c rietkerk_bjork_FKE.cpp -O3 -march=native -fPIE -fopenmp -std=c++20 -I/usr/local/cuda/include
+# nvcc -arch=sm_89 -O3 -c -o kernel_FKE.o  kernel_advdiff_FKE2D.cu -std=c++20
+#g++-14 -o cornwall_cuFKE3.out rietkerk_bjork_FKE.o order_3stoc_unity_rietkerk.o kernel_FKE.o -fopenmp -O3 -march=native -std=c++20 -I/usr/local/cuda/include -L/usr/local/cuda/lib64 -lcudart -lcudadevrt -Wl,-rpath=/usr/local/cuda/lib64

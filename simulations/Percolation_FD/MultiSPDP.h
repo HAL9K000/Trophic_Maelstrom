@@ -1,3 +1,4 @@
+//#pragma once
 #include <string>
 //#include <format>
 #include <stdlib.h>
@@ -8,6 +9,12 @@
 #include <iostream>
 #include <fstream>
 #include <sstream>
+
+#if defined(BARRACUDA) || defined(__CUDACC__)
+#include <cuda_runtime.h>
+#include <cufft.h>
+#include <cufftXt.h>
+#endif
 
 
 #include <regex>
@@ -25,6 +32,9 @@
 /** NOTE: The following include is for the exprtk library. Download and add to your project/include path.
 // if not already present. The library is used for parsing mathematical expressions. */
 #include <exprtk.hpp>
+/** NOTE: The following include is for the FFTW3 library. Download, configure, make, install and add to your project/include path.
+// if not already present. The library is used for performing discrete FFTs. */
+#include <fftw3.h>
 
 using namespace std::chrono;
 //static std::mt19937_64 rng(time(NULL));
@@ -61,6 +71,46 @@ namespace fs = std::filesystem;
 #else
 	#error "Number of species not supported. Pass valid compiler flag as -DSPB=2 or -DSPB=3"
 #endif
+
+//------------------------- STRUCTS & TYPEDEFS --------------------------------------------------------------//
+
+// Plain POD for device memory
+struct DoubleIntPair {
+    double first;
+    int    second;
+};
+
+typedef std::vector<std::vector <double>> D2Vec_Double;
+typedef std::vector<std::vector <int>> D2Vec_Int;
+
+typedef std::vector<std::vector <std::vector <double>>> D3Vec_Double;
+typedef std::vector<std::vector <std::vector <int>>> D3Vec_Int;
+
+typedef std::vector<std::vector <std::vector <std::vector <double>>>> D4Vec_Double;
+typedef std::vector<std::vector <std::vector <std::vector <int>>>> D4Vec_Int;
+
+typedef std::vector<std::vector<std::pair<double, double>>> D2Vec_Pair_Double;
+typedef std::vector<std::vector<std::pair<int, int>>> D2Vec_Pair_Int;
+
+typedef std::vector<double> Vec_Double;
+typedef std::vector<int> Vec_Int;
+
+//------------------------- GLOBAL CONSTANTS --------------------------------------------------------------//
+
+// CUDA constants (actually defined in the .cu kernel files)
+#if defined(__CUDACC__) || defined(BARRACUDA)
+#ifdef DEFINE_CUDA_CONSTANTS
+__constant__ double CuA[CuSpNV] /** ={aij, ajm} */;
+__constant__ double CuH[CuSpNV] /** ={hij, hjm} */;
+__constant__ double CuE[CuSpNV] /** ={ej, em} */;
+__constant__ double CuM[CuSpNV] /** ={mj, mm} */;
+__constant__ double CuD[Sp] /** ={D0, D1, D2, D3, D4} */;
+__constant__ double CuK[3] /** ={K0, K1, K2} */;
+__constant__ double CuV[CuSpNV] /** ={v0, v1} */;
+__constant__ DoubleIntPair d_r_frac[CuSpB]; /** ={ {fr_j, idx_j}, {fr_m, idx_m} } **/;
+#endif
+#endif
+
 
 inline const int SpB = Sp; //Number of biota species in the system.
 inline const int Sp_NV = Sp-1; //Number of grazer and predator species in system.
@@ -111,25 +161,10 @@ inline vector<string> MFT_Vec_CoexExpr(2*Sp, ""); //Vector of MFT Coexistance ex
 //inline exprtk::symbol_table<double> global_symbol_table; //Symbol table for the Expertk library.
 inline vector<double> frame_tmeas; //Vector to store time measurements for the frames.
 
-//------------------------- TYPEDEFS --------------------------------------------------------------//
-
-typedef std::vector<std::vector <double>> D2Vec_Double;
-typedef std::vector<std::vector <int>> D2Vec_Int;
-
-typedef std::vector<std::vector <std::vector <double>>> D3Vec_Double;
-typedef std::vector<std::vector <std::vector <int>>> D3Vec_Int;
-
-typedef std::vector<std::vector <std::vector <std::vector <double>>>> D4Vec_Double;
-typedef std::vector<std::vector <std::vector <std::vector <int>>>> D4Vec_Int;
-
-typedef std::vector<std::vector<std::pair<double, double>>> D2Vec_Pair_Double;
-typedef std::vector<std::vector<std::pair<int, int>>> D2Vec_Pair_Int;
-
-typedef std::vector<double> Vec_Double;
-typedef std::vector<int> Vec_Int;
-
-
-
+// Cache to store FFTW3 K-Hat kernels for fixed FFT transforms of central neighbourhoods for reuse.
+inline std::map<int, fftw_complex*> kHat_kernel_FFT_cache;
+// Map that stores neighbourhood counts for different perception ranges R as {R, effective neighbour count}
+inline std::map<int, int> nR_Perp_R; 
 
 
 //---------------------Some Primitives ------------------------------------------------------ //
@@ -216,6 +251,45 @@ struct zd_coordinates {
    double z;
 };
 
+// Struct for FFTW3 plan management
+struct FFTW3_CentralPlanner {
+    int L;
+    fftw_complex* rho_fft = nullptr; // Stores FFT of input (density) field
+    fftw_complex* kernel_fft = nullptr; // Stores FFT of kernel (neighbourhood) input field.
+    fftw_complex*  prod_fft = nullptr; // Stores products of frequencies in Fourier space
+    double* rho_spatial; // Stores input (density) field in spatial domain
+    double* kernel_spatial; // Stores neighourhodd kernel in spatial domain
+    double* convolution_spatial; // Stores output (convolution result) field in spatial domain
+    fftw_plan forward_rho  = nullptr; // Plan for forward FFT of density field
+    fftw_plan forward_kernel  = nullptr; // Plan for forward FFT of kernel field
+    fftw_plan backward  = nullptr;
+    
+	FFTW3_CentralPlanner(int L_) : L(L_) {
+        int L2 = L * L;
+        rho_fft = fftw_alloc_complex(L2);
+        kernel_fft = fftw_alloc_complex(L2);
+        prod_fft = fftw_alloc_complex(L2);
+        rho_spatial = fftw_alloc_real(L2);
+        kernel_spatial = fftw_alloc_real(L2);
+        convolution_spatial = fftw_alloc_real(L2);
+        forward_rho = fftw_plan_dft_r2c_2d(L, L, rho_spatial, rho_fft, FFTW_ESTIMATE);
+        //forward_kernel = fftw_plan_dft_r2c_2d(L, L, kernel_spatial, kernel_fft, FFTW_ESTIMATE);
+        backward = fftw_plan_dft_c2r_2d(L, L, prod_fft, convolution_spatial, FFTW_ESTIMATE);
+    }
+    
+    ~FFTW3_CentralPlanner() {
+        if (forward_rho) fftw_destroy_plan(forward_rho);
+        if (forward_kernel) fftw_destroy_plan(forward_kernel);
+        if (backward) fftw_destroy_plan(backward);
+        if (rho_fft) fftw_free(rho_fft);
+        if (kernel_fft) fftw_free(kernel_fft);
+        if (prod_fft) fftw_free(prod_fft);
+        fftw_free(rho_spatial);
+        fftw_free(kernel_spatial);
+        fftw_free(convolution_spatial);
+    }
+};
+
 inline const double PI = CalculatePi<14>::pi;
 inline const int SpB_Mov = 2*SpB + Comb<SpB, 2>::result; // Used for generating statistics on movement of surviving runs
 
@@ -226,6 +300,7 @@ template <typename T> int sgn(T val);
 void increase_stack_limit(long long stack_size);
 bool maxis(int a, int b);
 string format_str(const std::string& s, const std::map<string, string>& values);
+void precompute_FFT_KHat_kernels(FFTW3_CentralPlanner& fft_centralplanner, int L, int Rmax, double nVeg_frac_min = 0.2, double nVeg_frac_max = 1.0);
 void add_three(int a, int b, int c); //Test function.
 void set_Prefix(string& user_prefix, double mG = 0, double mP = 0);
 void set_LocustPrefix(string& user_prefix);
@@ -321,6 +396,10 @@ void f_DP_Dor_1Sp(D2Vec_Double &f, D2Vec_Double &Rho_M, D3Vec_Int &nR2, double b
 
 //------------------- Vegetation + Grazer-------------------//
 
+// FFTW3 accelerated version [ O(N^2LOG(N)) ].
+void calc_gamma_2Sp_NonRefugia_FFT(D2Vec_Double& Rho_t, D2Vec_Double& gamma, double (&Rho_avg)[Sp], vector<std::pair<double, int>>& rfrac, 
+    vector<std::pair<int, int>>& dtV_counter, double nVeg_frac, int r_max, int L, FFTW3_CentralPlanner& fft_central_plan);
+// Conventional O(N^2*K^2) version.
 void calc_gamma_2Sp_NonRefugia(const vector<pair<int, int>>& centralNeighboringSites, D2Vec_Double &Rho_t, D2Vec_Double &gamma,  
 	double (&Rho_avg)[Sp], vector <std::pair<double, int>>& rfrac, double nVeg_frac, int r_max, int L);
 void f_DP_Dor_2Sp(D2Vec_Double &f, D2Vec_Double &Rho_M, D3Vec_Int &nR2, double b, double c, 
@@ -332,6 +411,10 @@ void f_DP_Dor_2Sp(D2Vec_Double &f, D2Vec_Double &Rho_M, D3Vec_Int &nR2, double b
 
 //Calculates gamma for 3 Sp Rietkerk model (details in PDF, 
 // ASSUMING PREDATORS AREN'T DETERRED BY HIGH LOCAL VEGETATION DENSITY)
+// FFTW3 accelerated version [ O(N^2LOG(N)) ].
+void calc_gamma_3Sp_NonRefugia_FFT(D2Vec_Double& Rho_t, D2Vec_Double& gamma, double (&Rho_avg)[Sp], vector<std::pair<double, int>>& rfrac, 
+    vector<std::pair<int, int>>& dtV_counter, double nVeg_frac, int r_max, int L, FFTW3_CentralPlanner& fft_central_plan);
+// Conventional O(N^2*K^2) version.
 void calc_gamma_3Sp_NonRefugia(const vector<pair<int, int>>& centralNeighboringSites, D2Vec_Double &Rho_t, D2Vec_Double &gamma,  
 			double (&Rho_avg)[Sp], vector <std::pair<double, int>>& rfrac, vector <std::pair<int, int>>& dtV_counter, double nVeg_frac, int r_max, int L);
 //Calculates gamma for 3 Sp Rietkerk model (details in PDF)
@@ -343,9 +426,25 @@ void RK4_Integrate_Stochastic_MultiSp(D2Vec_Double &Rho_t, D2Vec_Double &Rho_tsa
 	double b, double c, double (&Dxd2)[Sp], double (&A)[SpB][SpB], double (&H)[SpB][SpB], double (&E)[SpB], double t,double dt,double dx, int g);
 void dP_Dornic_2D_MultiSp(D2Vec_Double &Rho, vector <double> &t_meas, double t_max, double a, double b, double c, double (&D)[Sp], double (&v)[SpB],
     double sigma[], double a_st, double a_end, double a_c, double (&A)[SpB][SpB], double (&H)[SpB][SpB], double (&E)[SpB], double (&M)[SpB], double pR[], 
-	int (&dtV)[SpB], double clow[], double dt, double dx, double dP, int r, int g, double Gstar = -1, double Vstar = -1);
+	int (&dtV)[SpB], double clow[], double dt, double dx, double dP, int r, int g, FFTW3_CentralPlanner& fft_central_plan, double Gstar = -1, double Vstar = -1);
 void first_order_critical_exp_delta_stochastic_MultiSp(int div, double t_max, double a_start, double a_end, double a_c, double b,  double c, 
 	double (&D)[Sp], double (&v)[SpB], double sigma[], double (&A)[SpB][SpB], double (&H)[SpB][SpB], double (&E)[SpB], double (&M)[SpB], double pR[], int (&dtV)[SpB], double clo[],
 	double dt, double dx, double dP, int r,  int g, double Gstar = -1, double Vstar = -1);
+
+//============================ CUDA Kernels for DP-Dornic Model ===================================//
+
+#if defined(__CUDACC__) || defined(BARRACUDA)
+
+cudaError_t copyToDeviceConstantMemory_GammaSweepTerms(const DoubleIntPair* dr_frac);
+void reportPerceptionArrays_Interface(int2* d_origin_Neighbourhood, double *d_rho_inverse, 
+    int* d_eff_sizes, int nR_Perp_length, int r_max, int L);
+__global__ void reportPerceptionArrays(int2* d_origin_Neighbourhood, double *d_rho_inverse, 
+    int* d_eff_sizes, int nR_Perp_length, int r_max, int L);
+
+__global__ void calc_gamma_3Sp_NonRefugia_kernel( const double* __restrict__ d_Rho_dt, double* __restrict__ d_gamma, std::pair<double, double>* d_v_eff,
+    int2* d_origin_Neighbourhood, const double* __restrict__ d_rho_inverse, const int* __restrict__ d_eff_sizes, int L, int L2, int max_neighbors, double eps, double inv_eps);
+void calc_gamma_vel_NonRefugia_CUDA(int2* d_origin_Neighbourhood, double* d_Rho_dt, double* d_gamma, std::pair<double, double>* d_v_eff, double *d_rho_inverse,
+	 int* d_eff_sizes, double(&Rho_avg)[Sp], vector <std::pair<double, int>>& rfrac, vector <std::pair<int, int>>& dtV_counter, int nR_Perp_length, int r_max, int L);
+#endif
 
 #endif

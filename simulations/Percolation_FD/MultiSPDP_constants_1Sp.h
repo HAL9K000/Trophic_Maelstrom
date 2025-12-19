@@ -10,3 +10,9 @@ inline std::string prelimheader = " a , r, L, t , <<P(x; t)>_x>_r, Var[<P(x; t)>
 //Header for preliminary files.
 inline const std::string gammaheader ="\n";
 inline std::string movmheader ="\n";
+
+#if defined(__CUDACC__) || defined(BARRACUDA)
+// Creating constexpr variables to be used in the CUDA kernels.
+inline const int CuSpB = 1; // Sp, biotic species in the system.
+inline const int CuSpNV = 0; // Sp - 1, biotic species in the system.
+#endif

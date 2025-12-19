@@ -16,3 +16,9 @@ inline std::string movmheader = " a , r, L, t , <GAM[P(x; t)]>_x, Var[<GAM[P(x; 
 					" <GAM[G(x; t)]>_x, Var[<GAM[G(x; t)]>_x], <vx[G(x; t)]>_x,  <vy[G(x; t)]>_x,"
 					" <GAM[Pr(x; t)]>_x, Var[<GAM[Pr(x; t)]>_x], <vx[Pr(x; t)]>_x,  <vy[Pr(x; t)]>_x, \n";
 //Header for movement files.
+
+#if defined(__CUDACC__) || defined(BARRACUDA)
+// Creating constexpr variables to be used in the CUDA kernels.
+inline const int CuSpB = 3; // Sp, biotic species in the system.
+inline const int CuSpNV = 2; // Sp - 1, biotic species in the system.
+#endif

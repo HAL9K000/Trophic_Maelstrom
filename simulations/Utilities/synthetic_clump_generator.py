@@ -9,20 +9,20 @@ import random
 
 SPB =3
 prefix ="HEXBLADE";
-L = 128; r =5;
-output_dir = f"../Input/Rietkerk/{SPB}Sp/{prefix}/L_{L}_a_0/"
+L = 256; r =40;
+output_dir = f"../Input/DP/{SPB}Sp/{prefix}/L_{L}_a_0/"
 
 # Create the output directory if it does not exist
 os.makedirs(output_dir, exist_ok=True)
 
 
-hex_length = {"  P(x; t)": 10}
+hex_length = {"  P(x; t)": 20}
 gauss_2sd_radius = {"  P(x; t)": 4}
-gauss_amp = {"  P(x; t)": (3000, 5000)}
+gauss_amp = {"  P(x; t)": (1, 1)}
 min_val = {"  P(x; t)": 0.0}
 percent_missing = {"  P(x; t)": 0.1}
 retain_cluster = {"  P(x; t)": 0}
-gradient_type = {"  P(x; t)": "Random"} #Valid arguments: "linear_X", "linear_-X", "linear_Y", "linear_-Y", "radial", "Random" or None
+gradient_type = {"  P(x; t)": None} #Valid arguments: "linear_X", "linear_-X", "linear_Y", "linear_-Y", "radial", "Random" or None
 radial_gradient_origin = {"  P(x; t)": (L//2, L//2)}
 
 
@@ -72,7 +72,8 @@ def tile_hex_grid_basic(L, hex_length, gradient=None, gradient_range=(0.1, 1), r
             else:
                 #print("Off-tile", i, j, int(hex_width / 2))
                 center = (i, j + int(hex_width / 2))
-            grid[center] = 1
+            #grid[center] = 1 #FOR TRUE HEXAGON CENTERS
+            grid[i%L, j%L] = 1 # FOR SIMPLIFIED (SQUARE) HEXAGON ("HEXBLADE") CENTERS
 
     if gradient != "Random" and gradient is not None:
         print("Gradient: ", gradient)
@@ -231,7 +232,7 @@ def main(hex_length, gauss_2sd_radius, L, r, gauss_amp, min_val, output_dir, per
             df[key] = grid.flatten()
             print("Max value: ", np.max(grid))
             #grid = df[key].values.reshape(L, L)]
-            plot_grid(grid, key)
+            #plot_grid(grid, key)
         print(gradient_type)
         if(gradient_type[first_key] == None or gauss_amp[first_key][0] == gauss_amp[first_key][1]):
             framesubdir = "SEP_{sep}_WID_{wid}/MSF_{missing}/MAMP_{mamp}_MINVAL_{minval}/"

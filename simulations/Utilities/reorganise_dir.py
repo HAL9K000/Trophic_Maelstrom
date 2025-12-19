@@ -95,17 +95,17 @@ The script accepts the following arguments:
 '''
 
 #prefixes =["DiC-NREF-1.1HI", "DiC-NREF-0.5LI", "DiC-NREF-0.1LI"]#, "DiC-NEW"]
-prefixes =["DiC-STD"]
+prefixes =["HsX2001-UA125A0-5E2UNI"]
 #prefixes =["", "DiC", "BURNIN", "DiC-BURNIN", "DDM-DiC", "DDM-DiC-BURNIN"]
 #root_dir = "../Data/Amarel/Rietkerk/Prelims/Stochastic/3Sp/"
 root_dir = "../Data/Remote/Rietkerk/Frames/Stochastic/3Sp/"
 #out_dir_noprefix = "../Data/Remote/Rietkerk/Reorg_Frames/1Sp/StdParam_MFT/"
-out_dir_noprefix = "../Data/Remote/Rietkerk/Reorg_Frames/1Sp/StdParam_MFT/"
+out_dir_noprefix = "../Data/Remote/Rietkerk/Reorg_Frames/3Sp/ASCALE_20_100_BRNIN-HsX-OLD/"
 
 #out_dir_noprefix = "../Data/Remote/Rietkerk/Reorg_Frames/3Sp/StdParam_20_100_MFTNu/"
 
 dP = 10000
-Geq = 5 # Optional. If Geq is not used in the subdirectory name, set Geq = "NA".
+Geq = 4.802 # Optional. If Geq is not used in the subdirectory name, set Geq = "NA".
 Veq = "NA" # Optional. If Veq is not used in the subdirectory name, set Veq = "NA".
 L= [128]
 indx_vals_t = -25
@@ -635,13 +635,15 @@ def post_process_subdir(subdirpath, prefix, filetype_ID="FRAME", tmin=tmin, tmax
         # Or one can calculate the power spectrum of the files in the subdirectory.
 
         #'''# Find mean and standard deviation of each column in each file in files if the column values are non-zero.
-        #Mean and Std Rho Density & Max Replicates
-        df_surviving = gen_MEAN_SD_COLSfiledata(files, pathtodir=subdirpath, ext="csv", nonzero=True, add_counts= True)
-        df_all = gen_MEAN_SD_COLSfiledata(files, pathtodir=subdirpath, ext="csv", nonzero=False, add_counts= True)
         
-        # Save this df (excluding first two columns) to a txt file in subdirpath.
+        
+        #'''# Save this df (excluding first two columns) to a txt file in subdirpath.
         if filetype_ID == "FRAME":
+            #Mean and Std Rho Density & Max Replicates
+            
             try:
+                df_surviving = gen_MEAN_SD_COLSfiledata(files, pathtodir=subdirpath, ext="csv", nonzero=True, add_counts= True)
+                df_all = gen_MEAN_SD_COLSfiledata(files, pathtodir=subdirpath, ext="csv", nonzero=False, add_counts= True)
                 if df_surviving is not None:
                     df_surviving.to_csv(subdirpath + f"/MEAN_STD_{filetype_ID}_Surviving_Runs.txt", sep="\t", index=False, header=True)
                 if df_all is not None:
@@ -673,8 +675,8 @@ def post_process_subdir(subdirpath, prefix, filetype_ID="FRAME", tmin=tmin, tmax
             #'''# Find Mean for each column in each file in files and the mean across all files for each column using gen_MEAN_INDVL_Colsfiledata.
             # Save this df to a txt file in subdirpath.
             
-            df_replicates = gen_MEAN_INDVL_Colsfiledata(files, pathtodir=subdirpath, ext="csv")
             try:
+                df_replicates = gen_MEAN_INDVL_Colsfiledata(files, pathtodir=subdirpath, ext="csv")
                 if df_replicates is not None:
                     df_replicates.to_csv(subdirpath + f"/MEAN_{filetype_ID}_REPLICATES.txt", sep="\t", index=False, header=True)
             except Exception as e:
@@ -682,7 +684,7 @@ def post_process_subdir(subdirpath, prefix, filetype_ID="FRAME", tmin=tmin, tmax
             #'''
 
             #'''# Finds the power spectrum of each column in each file using gen_FFT_PowerSpectra.
-            # Bin_mask : "auto" (use GMMs to find thresholds), "read" (read thresholds from files in savedir/BIN_MASKS/{files}.txt), 
+            # Bin_mask : "auto", "GMM" (use GMMs to find thresholds), "read" (read thresholds from files in savedir/BIN_MASKS/{files}.txt), 
             # or None (no thresholding).
             df_fft_power = gen_FFT_PowerSpectra(files, pathtodir=subdirpath, ext="csv", Tmin = tmin, Tmax = tmax, bin_mask= "GMM", 
                                                 exclude_col_labels= ["a_c", "x", "L", "W(x; t)", "O(x; t)"], binwidth=0.5)
@@ -791,7 +793,7 @@ def unified_post_process(prefixes= [], filetype_ID="FRAME", ncores= CPU_Ncores, 
 
             if daskclient:
                 # Use Dask to parallelize the post-processing of each subdirectory.
-                nofutures =[dask_delayed(post_process_subdir)(subdirpath, pre, filetype_ID, tmin, tmax) for subdirpath in all_valid_subdirpaths]
+                nofutures = [dask_delayed(post_process_subdir)(subdirpath, pre, filetype_ID, tmin, tmax) for subdirpath in all_valid_subdirpaths]
                 nosubmission = daskclient.compute(nofutures)
                 # Track the progress of the Dask tasks.
                 dask_progress(nosubmission)
@@ -879,7 +881,7 @@ def post_process(prefixes= []):
                 print("Error: Could not write maxR to */" + os.path.basename(subdirpath) + "/maxR.txt with error message: \n" + str(e))
             #'''
 
-            '''# Find Mean for each column in each file in files and the mean across all files for each column using gen_MEAN_INDVL_Colsfiledata.
+            #'''# Find Mean for each column in each file in files and the mean across all files for each column using gen_MEAN_INDVL_Colsfiledata.
             # Save this df to a txt file in subdirpath.
             df_replicates = gen_MEAN_INDVL_Colsfiledata(files, pathtodir=subdirpath, ext="csv")
             try:
@@ -1214,10 +1216,10 @@ end_time_CPU = None
     
 
 if __name__ == "__main__":
-    #main()
+    main()
     #post_process(prefixes)
-    unified_post_process(prefixes, "FRAME", ncores= CPU_Ncores, tmin=85000, tmax = 120230)
-    #unified_post_process(prefixes, "GAMMA", ncores= CPU_Ncores, tmin=80000)
+    unified_post_process(prefixes, "FRAME", ncores= CPU_Ncores, tmin=140000, tmax = 200000)
+    unified_post_process(prefixes, "GAMMA", ncores= CPU_Ncores, tmin=70000)
     #post_process_gamma(prefixes)
     #post_imgprocess(prefixes= prefixes, Trange=[82000.1, 84000, 86000, 88000, 90000, 92000, 94000, 96000, 98000, 100000], largest_T_only= True)
     #post_imgprocess(prefixes= prefixes, Trange=[0, 6000], largest_T_only= True)
@@ -1238,7 +1240,6 @@ if(gpu.GPU_AVAILABLE):
 end_time_CPU = time.time()
 elapsed_time_CPU = end_time_CPU - start_time_CPU
 print(f"Time reported by CPU: {elapsed_time_CPU:.3f} seconds")
-
 
 
 
