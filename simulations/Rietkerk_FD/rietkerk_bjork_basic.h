@@ -156,6 +156,7 @@ inline const string frame_prefix = "/FRAME_P_c_DP_G_"; //Prefix for frame files.
 //inline const string errorframe_prefix = "/ERROR_"; //Prefix for frame files.
 inline const string gamma_prefix = "/GAMMA_G_"; //Prefix for gamma files.
 inline const string prelim_prefix = "/PRELIM_AGGRAND_P_c_ID_"; //Prefix for preliminary data files.
+inline const string prelim_prefix_basic = "/PRELIM_AGGRAND_Basic_P_c_Delta_DP_G_"; //Prefix for preliminary data files.
 inline const string replicate_prefix = "/PRELIM_TSERIES_P_c_DP_G_"; //Prefix for replicate time-series data files.
 inline const string movement_prefix = "/PRELIM_MOVSERIES_P_c_DP_G_"; //Prefix for movement time-series data files.
 //inline const string frame_header = "a_c,  x,  P(x; t), G(x; t), Pr(x; t), W(x; t), O(x; t) \n"; //Header for frame files.
@@ -320,7 +321,7 @@ bool maxis(int a, int b);
 string format_str(const std::string& s, const std::map<string, string>& values);
 void precompute_FFT_KHat_kernels(FFTW3_CentralPlanner& fft_centralplanner, int L, int Rmax, double nVeg_frac_min = 0.2, double nVeg_frac_max = 1.0);
 void add_three(int a, int b, int c); //Test function.
-void set_Prefix(string& user_prefix, double mG = 0, double mP = 0);
+void set_Prefix(string& user_prefix, double mG = 0, double mP = 0, bool stochastic = true);
 void set_LocustPrefix(string& user_prefix);
 void set_input_Prefix(string& user_inputframepath, string& user_prefix, double user_a_c, double user_dP, double user_Geq = -1, double user_input_T = -1);
 void set_global_system_params(double dt, double dx);

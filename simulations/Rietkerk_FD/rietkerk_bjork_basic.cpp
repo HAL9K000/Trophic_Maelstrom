@@ -225,7 +225,7 @@ bool comparePairs(const pair<int, int>& a, const pair<int, int>& b)
     return (a.first * a.first + a.second * a.second) < (b.first * b.first + b.second * b.second);
 }
 
-void set_Prefix(string& user_prefix, double mG /** = 0.0 */, double mP /** = 0.0 */)
+void set_Prefix(string& user_prefix, double mG /** = 0.0 */, double mP /** = 0.0 */, bool stochastic /** = true */ )
 {
 	//Sets the global prefix for the output files.
 	prefix = user_prefix;
@@ -244,9 +244,19 @@ void set_Prefix(string& user_prefix, double mG /** = 0.0 */, double mP /** = 0.0
 	  SpB_str = std::to_string(SpB) +"Sp_mG_" + mG_str.str();
 	else
 	  SpB_str = std::to_string(SpB) +"Sp";
-	  frame_folder = "../Data/Rietkerk/Frames/Stochastic/"+ SpB_str +"/" + prefix + "_";  //Folder to store frames.
-	  prelim_folder  = "../Data/Rietkerk/Prelims/Stochastic/"+ SpB_str +"/"+ prefix +"_"; //Folder to store preliminary data.
-	  stat_prefix =  "../Data/Rietkerk/Stochastic/1stOrderCC_Rietkerk_" + prefix + "_P_c_G_"; //Header for frame files.
+	  if(stochastic)
+	  {
+		frame_folder = "../Data/Rietkerk/Frames/Stochastic/"+ SpB_str +"/" + prefix + "_";  //Folder to store frames.
+	  	prelim_folder  = "../Data/Rietkerk/Prelims/Stochastic/"+ SpB_str +"/"+ prefix +"_"; //Folder to store preliminary data.
+	  	stat_prefix =  "../Data/Rietkerk/Stochastic/1stOrderCC_Rietkerk_" + prefix + "_P_c_G_"; //Header for frame files.
+	  }
+	  else
+	  {
+		frame_folder = "../Data/Rietkerk/Frames/Non-Stochastic/"+ SpB_str +"/" + prefix + "_";  //Folder to store frames.
+	  	prelim_folder  = "../Data/Rietkerk/Prelims/Non-Stochastic/"+ SpB_str +"/"+ prefix +"_"; //Folder to store preliminary data.
+	  	stat_prefix =  "../Data/Rietkerk/Non-Stochastic/1stOrderCC_Rietkerk_" + prefix + "_P_c_G_"; //Header for frame files.
+	  }
+
 }
 
 
@@ -1835,7 +1845,7 @@ void f_2D(D2Vec_Double &f, D2Vec_Double &Rho_M, D3Vec_Int &nR2, double a, double
 {
 	//Vector function that updates an array containing (dP/dt, dW/dt, DO/dt) for each site in the lattice.
     //Based on the Rietkerk model for plant vegetation dynamics.
-
+	#pragma omp simd // SIMD optimization for better performance.	
 	for(int i=0; i < g*g; i++)
 	{
         //Equations for the density of plants, soil water and surface water at each site.
@@ -1886,45 +1896,58 @@ void RK4_Integrate(D2Vec_Double &Rho_t, D2Vec_Double &Rho_tsar, D2Vec_Double &K1
 
 	f_2D(K1, Rho_t, nR2, a, c, gmax, alpha, d, rW, W0, Dxd2, K, t, dt, g); //K1 updated.
 
-	for(int i=0; i < g*g; i++)
+
+	for(int s= 0; s <Sp; s++)
 	{
-		for(int s= 0; s <Sp; s++)
+		#pragma omp simd // SIMD optimization for better performance.
+		for(int i=0; i < g*g; i++)
 			Rho_tsar[s][i] = Rho_t[s][i] + (dt2)*K1[s][i];
 	}
 
 	f_2D(K2, Rho_tsar, nR2, a, c, gmax, alpha, d, rW, W0, Dxd2, K, t + dt2, dt,  g); //K2 updated.
 
-	for(int i=0; i < g*g; i++)
+	for(int s= 0; s <Sp; s++)
 	{
-		for(int s= 0; s <Sp; s++)
+		#pragma omp simd // SIMD optimization for better performance.
+		for(int i=0; i < g*g; i++)
 			Rho_tsar[s][i] = Rho_t[s][i] + (dt2)*K2[s][i];
 	}
 	f_2D(K3, Rho_tsar, nR2, a, c, gmax, alpha, d, rW, W0, Dxd2, K, t + dt2, dt,  g); //K3 updated.
-	for(int i=0; i < g*g; i++)
+	for(int s= 0; s <Sp; s++)
 	{
-		for(int s= 0; s <Sp; s++)
+		#pragma omp simd // SIMD optimization for better performance.
+		for(int i=0; i < g*g; i++)
 			Rho_tsar[s][i] = Rho_t[s][i] + (dt)*K3[s][i];
 	}
 	f_2D(K4, Rho_tsar, nR2, a, c, gmax, alpha, d, rW, W0, Dxd2, K, t + dt, dt, g); //K4 updated.
     
-	for(int i=0; i < g*g; i++)
+	for(int s= 0; s <Sp; s++)
 	{
-		for(int s= 0; s <Sp; s++)
+		#pragma omp simd // SIMD optimization for better performance.
+		for(int i=0; i < g*g; i++)
 		{
 			Rho_t[s][i]+= (dt6)*( K1[s][i] + 2.0*K2[s][i] + 2.0*K3[s][i] + K4[s][i]);
-	
-
+		}
+		#ifdef DEBUG
+		bool isKoed = false; // Flag to indicate if the RK4 integration was "KO'ed" due to invalid values.
+		for(int i=0; i < g*g; i++)
+		{
 			if( Rho_t[s][i] < 0 || isfinite(Rho_t[s][i]) == false || isnan(Rho_t[s][i]) == true)
 			{
-				stringstream m6;     //To make cout thread-safe as well as non-garbled due to race conditions.
-        		m6 << "RK4 WAS KO'ED WITH:\t" << Rho_t[s][i] << "\t at index:  " << i << " and thread:  " << omp_get_thread_num() 
-				<< " at time:\t:" << t << " For Species:\t:" << s << " with K1[s][i]:   " << K1[s][i] << "\t, K2[s][i]:\t" << K2[s][i] 
-				<< "\t, K3[s][i]:\t" << K3[s][i] << "\t AND K4[s][i]:\t" << K4[s][i] << "\n"; cerr << m6.str();
-				 //cout << m6.str();
-				//errout.open(thr, std::ios_base::app); errout << m6.str(); errout.close();
+				if(isKoed == false)
+				{
+					stringstream m6;     //To make cout thread-safe as well as non-garbled due to race conditions.
+					m6 << "RK4 WAS KO'ED WITH:\t" << Rho_t[s][i] << "\t at index:  " << i << " and thread:  " << omp_get_thread_num() 
+					<< " at time:\t:" << t << " For Species:\t:" << s << " with K1[s][i]:   " << K1[s][i] << "\t, K2[s][i]:\t" << K2[s][i] 
+					<< "\t, K3[s][i]:\t" << K3[s][i] << "\t AND K4[s][i]:\t" << K4[s][i] << "\n"; cerr << m6.str();
+						//cout << m6.str();
+					//errout.open(thr, std::ios_base::app); errout << m6.str(); errout.close();
+					isKoed = true;
+				}
 			}
-			
 		}
+		#endif //DEBUG
+			
 	}
 }
 
@@ -1940,11 +1963,14 @@ void RK4_Wrapper_2D(D2Vec_Double &Rho, vector <double> &t_meas, double t_max, do
 	//double Rho_tsar[Sp][g*g] ={0.0};
 	//double Rho_M[Sp][g*g] ={0.0, 0.0};
 
+	int thrID; //Unique ID for each thread, used for saving files.
+	
 	D3Vec_Int nR2 (g*g, D2Vec_Int (3, vector<int> (3, 0)));
     //nR2 is 3D [(L*L)x3x3] vector initialised to 0, which stores neighbours of all sites i (second dim) in a ball of NORM 1 (SQUARE) radius 1 (2ND & 3RD dim).
 	//determine_neighbours_R2(nR2, g); //Assigning neigbours.
 	determine_neighbours_Sq8(g, nR2); //Assigning neigbours.
-	int tot_iter = static_cast<int>(1.0/dt) + 1 + t_meas.size(); // Stores total number of iterations (i.e. time steps logged) per replicate.
+	//int tot_iter = static_cast<int>(1.0/dt) + 1 + t_meas.size(); // Stores total number of iterations (i.e. time steps logged) per replicate.
+	int tot_iter = t_meas.size(); // Stores total number of iterations (i.e. time steps logged) per replicate.
 	t_max = t_meas[t_meas.size() -1]; //Only compute until end of sampling events
 
 	//t_meas[0] = 100; t_meas[1] = 200; t_meas[2] = 300; 
@@ -1952,11 +1978,13 @@ void RK4_Wrapper_2D(D2Vec_Double &Rho, vector <double> &t_meas, double t_max, do
 	//double rho_rep_avg_var[tot_iter][Sp4_1] ={0.0};
 	D2Vec_Double rho_rep_avg_var(tot_iter, vector<double> (Sp4_1, 0.0));
 
-	int ind=0;
-	for(double t =0; t <= 1; t+=dt)
-	{ rho_rep_avg_var[ind][0] = t; ind+=1; }
 	for(int i =0; i< t_meas.size(); i++)
-	{ rho_rep_avg_var[ind+i][0] = t_meas[i];}  //Setting up time index of rho_t_N_R2_rep
+	{ rho_rep_avg_var[i][0] = t_meas[i];}  //Setting up time index of rho_t_N_R2_rep
+	//int ind=0;
+	//for(double t =0; t <= 1; t+=dt)
+	//{ rho_rep_avg_var[ind][0] = t; ind+=1; }
+	//for(int i =0; i< t_meas.size(); i++)
+	//{ rho_rep_avg_var[ind+i][0] = t_meas[i];}  //Setting up time index of rho_t_N_R2_rep
 
 	stringstream m0;     //To make cout thread-safe as well as non-garbled due to race conditions.
     m0 << "Parameters:\t a:\t" << a << "\t c:\t " << c << "\t dt,dx:\t " << dt << "," << dx << "\t gmax:\t " << gmax 
@@ -1973,7 +2001,7 @@ void RK4_Wrapper_2D(D2Vec_Double &Rho, vector <double> &t_meas, double t_max, do
 		diff_coefficient[s] = D[s]/(dx2);
   	double p0istar, p0jstar, p0mstar; // Analytic steady state values.
 
-	if(a < 1)
+	if(a <= 1)
 	{
 		p0istar = 0.0; p0jstar = a/rW; p0mstar = a/(alpha*W0);
 	}
@@ -1984,9 +2012,20 @@ void RK4_Wrapper_2D(D2Vec_Double &Rho, vector <double> &t_meas, double t_max, do
   		p0mstar = (a/alpha)*(p0istar + K[2] )/(p0istar + K[2]*W0);
 	}
 
+	//double def_sigma[Sp] = {0, 0, 0}; // Non-stochastic default.
+	//double v[SpB] ={0}; //Velocity of species.
+	//double A[SpB][SpB]; double H[SpB][SpB]; 
+  	//double E[SpB] ={1.0}; double M[SpB] ={d}; double pR[SpB] ={0.0};
+
 	auto start_t = high_resolution_clock::now(); //Start the clock
 	for(int j=0; j< r; j++)
 	{
+
+		int rd = std::random_device{}(); // random device engine, usually based on /dev/random on UNIX-like systems
+		//https://cplusplus.com/forum/beginner/220120/
+		std::mt19937_64 rng; // initialize Mersennes' twister using rd to generate the seed
+		rng.seed(rd+j);
+		uniform_real_distribution<double> unif(0.0, 1.0); normal_distribution<double> norm(0.0, 1.0);
 		// Iterating over replicates.
 		//double p0i = 0.5; double p0j= 2.25; double p0m= 8; // In g/m^2
 
@@ -2018,10 +2057,18 @@ void RK4_Wrapper_2D(D2Vec_Double &Rho, vector <double> &t_meas, double t_max, do
 
 		*/
 
+		//Define thrID as a random number between 0 and 10000, iff j =0.
+		thrID = (j == 0) ? int(round(unif(rng)*10000)) : thrID; //Random number between 0 and 1000.
+
 
 		D2Vec_Double Rho_dt(Sp, vector<double> (g*g, 0.0)); // 2D vector of dim: Sx(L*l) Updated through the turn, in turn used to update DRho.
 		D2Vec_Double Rho_tsar(Sp, vector<double> (g*g, 0.0)); // 2D vector of dim: Sx(L*l) Dummy variable, Kept constant, only updated at end of turn.
 		//double Rho_M[tot_iter][Sp2] ={0.0}; //Stores <rho>x values per time step for a single replicate.
+
+		D2Vec_Double gamma(SpB, vector<double> (g*g, 0.0)); //Stores gamma for each species at each site.
+		// 2D vector of pairs of dim: SpBx(L*l), called v. Stores the velocity of each species at each site.
+		//D2Vec_Pair_Double v_eff(SpB, std::vector<std::pair<double, double>>(g*g, {0.0, 0.0}));
+
 		D2Vec_Double K1(Sp, vector<double> (g*g, 0.0)); D2Vec_Double K2(Sp, vector<double> (g*g, 0.0));
     	D2Vec_Double K3(Sp, vector<double> (g*g, 0.0)); D2Vec_Double K4(Sp, vector<double> (g*g, 0.0));
 		D2Vec_Double Rho_M(tot_iter, vector<double> (Sp2, 0.0)); //Stores <rho>x values per time step for a single replicate.
@@ -2052,7 +2099,7 @@ void RK4_Wrapper_2D(D2Vec_Double &Rho, vector <double> &t_meas, double t_max, do
 
 		while (t < t_max + dt)
 		{
-			if(t <= 1.0 || t >= t_meas[index] -dt/2.0 && t < t_meas[index] +dt/2.0)
+			if(t == 0.0 || t >= t_meas[index] -dt/2.0 && t < t_meas[index] +dt/2.0)
 			{
 
 				double rhox_avg, rhox_num; //Stores spatial average and number of occupied sites at given t.
@@ -2061,30 +2108,57 @@ void RK4_Wrapper_2D(D2Vec_Double &Rho, vector <double> &t_meas, double t_max, do
                     vector <double> temp= {Rho_dt[s].begin(),Rho_dt[s].end()}; //Rho_dt for species 's'
                     rhox_avg = mean_of_vector(temp, g*g); //Finds spatial average of densities at given t.
 				    rhox_num = occupied_sites_of_vector(temp, g*g); //Finds number of occupied at given t.
-				    Rho_M[iter_index][2*s] = rhox_num; Rho_M[iter_index][2*s +1] = rhox_avg; 
+				    Rho_M[index][2*s] = rhox_num; Rho_M[index][2*s +1] = rhox_avg; 
 
 					vector<double>().swap(temp); //Flush temp out of memory.0
 
                     if(rhox_num == 0.0 and s== 0)
 					    break; //Finish negotiations as all basal species are dead.
                 }
-				 iter_index+=1;//Rho_M.push_back({t, rhox_avg});
+				//iter_index+=1;//Rho_M.push_back({t, rhox_avg});
 
-				if( t >= 500 && t <= 2500 || t== 0 ||  iter_index >= tot_iter -15 &&  iter_index <= tot_iter)
+				// Saving frames to file at given time points.
+				if( index == int(tot_iter*0.6) || index == int(tot_iter*0.85) || index == int(tot_iter*0.9) || index == int(tot_iter*0.95) || index == int(tot_iter-1))
+				{
+
+					D2Vec_Double rho_rep_avg_var_temp(index+1, vector<double> (Sp4_1, 0.0)); //Stores time, running avg, var (over replicates) of <rho(t)>x and number of surviving runs (at t) respectively.
+					//std::copy(rho_rep_avg_var.begin(), rho_rep_avg_var.begin() + index, rho_rep_avg_var_temp.begin());
+					var_mean_incremental_surv_runs(rho_rep_avg_var_temp, Rho_M, index+1, 0);
+
+					//Time is stored in the first column.
+					for(int i=0; i < index+1; i++)
+						rho_rep_avg_var_temp[i][0] = t_meas[i];
+
+					stringstream L, tm ,d3, p1, a1, a2, dimitri, rini, Dm, gm, jID;
+
+					L << g; tm << t_meas[index]; d3 << setprecision(3) << dt; p1 << setprecision(4) << a; dimitri << dP;
+					rini << j; Dm << setprecision(3) << D[0]; gm << gmax; jID << thrID; a1 << a_st; a2  << a_end;
+					// Three replicates are over.
+					
+					string parendir ="";
+					parendir = prelim_folder + a1.str() + "-" + a2.str() +  "_dP_" + dimitri.str() + "/TimeSeries"; // Parent directory for timeseries files.
+					string filenamePattern = replicate_prefix + L.str() + "_T_" + tm.str() + "_dt_" + d3.str() + "_a_"+ p1.str() +
+					"_D0_"+ Dm.str() + "_jID_"+ jID.str() + "_R_";
+
+					save_prelimframe(rho_rep_avg_var_temp, parendir, filenamePattern, a, a_st, a_end, t, dt, dx, dP, j, g, prelimheader, false, false);
+				}
+
+				if( t >= 1000 && t <= 2000 || t== 0 ||  index >= tot_iter -15 &&  index <= tot_iter)
 				{
 					//Saving Rho_dt snapshots to file. This is done at times t= 0, t between 100 and 2500, and at time points near the end of the simulation.
 					
-					stringstream L, tm ,d3, p1, rini, gm, a1, a2, Dm0, Dm1, alph, w0t, dix, dimitri;
+					stringstream L, tm ,d3, p1, rini, gm, a1, a2, Dm0, Dm1, alph, w0t, dix, dimitri,jID;
 
   					L << g; tm << t; d3 << setprecision(3) << dt; p1 << setprecision(4) << a; dix << setprecision(2) << dx;
   					rini << j; Dm0 << setprecision(3) << D[0]; Dm1 << setprecision(3) << D[1]; gm << setprecision(3) << gmax;
 					w0t << setprecision(3) << W0; alph << setprecision(3) << alpha; dimitri << setprecision(3) << dP;
-					a1 << a_st; a2  << a_end;
+					a1 << a_st; a2  << a_end; jID << thrID;
 					// Three replicates are over.
 
-					string parendir = "../Data/Rietkerk/Frames/Non-Stochastic/" + a1.str() + "-" + a2.str() +  "_dP_" + dimitri.str();
+					//string parendir = "../Data/Rietkerk/Frames/Non-Stochastic/" + a1.str() + "-" + a2.str() +  "_dP_" + dimitri.str();
+					string parendir = frame_folder + a1.str() + "-" + a2.str() +  "_dP_" + dimitri.str();
 					string filenamePattern = "/FRAME_RAND_Basic_P_c_DP_G_" + L.str() + "_T_" + tm.str() + "_dt_" + d3.str() + "_a_"+ p1.str() 
-					+ "_D0_"+ Dm0.str() + "_D1_"+ Dm1.str() + "_dx_"+ dix.str() + "_alph_"+ alph.str() + "_gmax_"+ gm.str() + "_R_";
+					+ "_D0_"+ Dm0.str() + "_D1_"+ Dm1.str() + "_jID_"+ jID.str() + "_dx_"+ dix.str() + "_alph_"+ alph.str() + "_gmax_"+ gm.str() + "_R_";
 					string filename = filenamePattern + rini.str() + ".csv"; // Naive filename
 					save_frame(Rho_dt, parendir, filenamePattern, a, a_st, a_end, t, dt, dx, dP, j, g, "a_c,  x,  P(x; tmax), W(x; tmax), O(x; tmax) \n");
 					/** OLD WAY OF SAVING FRAME FILES 
@@ -2106,8 +2180,7 @@ void RK4_Wrapper_2D(D2Vec_Double &Rho, vector <double> &t_meas, double t_max, do
 					
 				}
 				
-				if( t > 1.0)
-					index+=1;
+				index+=1;
 
 			}
 
@@ -2126,6 +2199,7 @@ void RK4_Wrapper_2D(D2Vec_Double &Rho, vector <double> &t_meas, double t_max, do
         				m6 << "RHO FALLS BELOW O:\t" << Rho_dt[s][i] << "\t at index:  " << i << " and thread:  " << omp_get_thread_num() 
 						<< " at time:\t:" << t << " with Rho(t-dt,i):   " << Rho_tsar[s][i] << "\t and Analytic Integration Term:\t" 
 						<< Rho_tsar[s][i]<<  "\n"; cout << m6.str(); cerr << m6.str(); //so=0;
+						exit(1);
 						//rrout.open(thr, std::ios_base::app); errout << m6.str(); errout.close();
 					}
 
@@ -2208,9 +2282,16 @@ void RK4_Wrapper_2D(D2Vec_Double &Rho, vector <double> &t_meas, double t_max, do
 			stringstream L, tm ,d3, p1, a1, a2, dimitri, rini, Dm, gm;
 
   			L << g; tm << t_max; d3 << setprecision(3) << dt; p1 << setprecision(4) << a; dimitri << dP;
-  			rini << j; Dm << setprecision(3) << D[0]; gm << gmax; 
+  			rini << j; Dm << setprecision(3) << D[0]; gm << gmax; a1 << a_st; a2  << a_end;
 			// Three replicates are over.
+			
+			string parendir ="";
+			parendir = prelim_folder + a1.str() + "-" + a2.str() +  "_dP_" + dimitri.str() + "/"; // Parent directory for prelim files.
+			string filenamePattern = prelim_prefix_basic + L.str() + "_T_" + tm.str() + "_dt_" + d3.str() + "_a_"+ p1.str() +
+			"_D0_"+ Dm.str() + "_gmax_"+ gm.str() + "_R_";
 
+			save_prelimframe(rho_rep_avg_var, parendir, filenamePattern, a, a_st, a_end, t, dt, dx, dP, j, g, prelimheader, true);
+			/** OLD WAY OF SAVING PRELIM FILES 
 			ofstream output_dp;
   			// Creating a file instance called output to store output data as CSV.
 			output_dp.open("../Data/Rietkerk/Prelims/Non-Stochastic/" + a1.str() + "-" + a2.str() +  "_dP_" + dimitri.str() + "/PRELIM_AGGRAND_Basic_P_c_Delta_DP_G_" + L.str() + "_T_" + tm.str() + "_dt_" + d3.str() + "_a_"+ p1.str() +
@@ -2231,6 +2312,7 @@ void RK4_Wrapper_2D(D2Vec_Double &Rho, vector <double> &t_meas, double t_max, do
 			}
 
 			output_dp.close();
+			//*/
 		}
 
 
@@ -2295,6 +2377,7 @@ void first_order_critical_exp_delta(int div, double t_max, double a_start, doubl
 	cout << "NOSTRA" <<"\n";
   	// The pspace to iterate over.
     vector <double> t_measure = logarithm10_time_bins(t_max, dt);
+	t_measure.insert(t_measure.begin(), 0.0);
 	// Computes and returns ln-distributed points from t= 10^{0} to log10(t_max) (the latter rounded down to 1 decimal place) 
   // Returns time-points measured on a natural logarithmic scale from e^{2} to e^ln(t_max) rounded down to one decimal place.
 
@@ -2304,11 +2387,18 @@ void first_order_critical_exp_delta(int div, double t_max, double a_start, doubl
 		cout << t_measure[i] << " ";
   	} 	cout << "\n";
 
+	int rd = std::random_device{}();
+	std::mt19937_64 rng; // initialize Mersennes' twister using rd to generate the seed
+	rng.seed(rd); // Seed the generator
+	std::uniform_int_distribution<int> unif_int(0, 15); //Use this to generate random numbers between 0 and 15.
+	
   	//usleep will pause the program in micro-seconds (1000000 micro-seconds is 1 second)
     const int microToSeconds = 1000000;   
-    const double delay1 = 5 * microToSeconds;     //5 seconds
-    
-    cout<<"Delay 1 in progress... ("<<delay1/microToSeconds<<"s)"<<"\n";
+    const double delay1 = unif_int(rng)* microToSeconds;     //5 seconds
+	// Random delay to stagger the start of the parallel threads.
+	usleep(static_cast<int>(delay1)); //Sleep for delay1 microseconds
+    cout<<"Delay 1 in progress... ("<<delay1/microToSeconds<<"s)"<<endl;
+
 	std::vector<vector <double>> vec;
   // Stores collated output from parallel method calls in proper ascending order of p values.
 
@@ -3922,7 +4012,7 @@ void rietkerk_Dornic_2D_MultiSp(D2Vec_Double &Rho, vector <double> &t_meas, doub
 
 		//init_randbistableframe(Rho_dt, g*g, a, a_c,  perc, chigh, clow); // Returns a frame with random speckles of high and low density.
 
-		/** EXPRT-TK INITIALISATIONS 
+		///** EXPRT-TK INITIALISATIONS 
 		// MFT PERTURBATION BASED FRAME INITIALISATION
 		#if defined(INIT) && INIT == 0
 			// HOMOGENEOUS FRAME INITIALISATION
@@ -3955,7 +4045,7 @@ void rietkerk_Dornic_2D_MultiSp(D2Vec_Double &Rho, vector <double> &t_meas, doub
 		#endif
 		// */
 
-		///**  GAUSSIAN FRAME INITIALISATION  
+		/**  GAUSSIAN FRAME INITIALISATION  
 		// Initialise vector <double> amp to elements of clow[].
 		vector <double> amp(Sp, 500.0);  //Setting amplitude of gaussian distributions of vegetation to 500.
 		for (int s=0; s< Sp; s++)
@@ -4222,9 +4312,10 @@ void rietkerk_Dornic_2D_MultiSp(D2Vec_Double &Rho, vector <double> &t_meas, doub
 			stringstream m6_2;     //To make cout thread-safe as well as non-garbled due to race conditions.
 			vector <double> temp_veg_1 = {Rho_dt[0].begin(),Rho_dt[0].end()}; //Rho_dt for species '0'
 			double rhox_mean_veg = mean_of_vector(temp_veg_1, g*g); //Finds spatial average of densities at given t.
+			double rhox_num_veg1 = occupied_sites_of_vector(temp_veg_1, g*g); //Finds number of occupied sites at given t.
 			vector<double>().swap(temp_veg_1); //Flush temp out of memory.
 			m6_2 << "DORNIC INTEGRATION FOR VEG DONE,  AT TIME [t, thr, a]\t" << t << " , " << omp_get_thread_num() << " , " << a 
-			<< " with # non-zero sites in VEG Rho_dt_0:  " << rhox_num_veg << " AND MEAN VEG DENSITY:  " << rhox_mean_veg << "\n"; cout << m6_2.str();
+			<< " with # non-zero sites in VEG Rho_dt_0:  " << rhox_num_veg1 << " AND MEAN VEG DENSITY:  " << rhox_mean_veg << "\n"; cout << m6_2.str();
 			cerr << m6_2.str();
 			#endif
 			//*/
@@ -4324,13 +4415,13 @@ void rietkerk_Dornic_2D_MultiSp(D2Vec_Double &Rho, vector <double> &t_meas, doub
 			if(counter%50000 == 0)
 			{
 
-				temp_1 = {Rho_dt[0].begin(),Rho_dt[0].end()}; //Rho_dt for species '0'
-				rhox_dt = occupied_sites_of_vector(temp_1, g*g); //Finds number of occupied at given t.q
+				vector <double>  temp_1 = {Rho_dt[0].begin(),Rho_dt[0].end()}; //Rho_dt for species '0'
+				double rhox_dt = occupied_sites_of_vector(temp_1, g*g); //Finds number of occupied at given t.q
 				vector<double>().swap(temp_1); //Flush temp out of memory.0
 
 				stringstream m5_1;     //To make cout thread-safe as well as non-garbled due to race conditions.
 				m5_1 << "STATUS UPDATE AT TIME [t, thr]\t" << t << " , " << omp_get_thread_num()  << "\t VEG DORNIC DONE with non-zero elements in DRho_0:  " 
-				<< rhox_num_veg << "\t and non-zero elements in Rho_dt_0:  " << rhox_dt << "\t and INDEX VAL, T_MEAS:\t" << index <<  " , " << t_meas[index] << "\n"; cout << m5_1.str();
+				<< rhox_num_veg1 << "\t and non-zero elements in Rho_dt_0:  " << rhox_dt << "\t and INDEX VAL, T_MEAS:\t" << index <<  " , " << t_meas[index] << "\n"; cout << m5_1.str();
 				errout.open(thr, std::ios_base::app); errout << m5_1.str(); errout.close();
 			}
 			//*/
@@ -4823,8 +4914,8 @@ void first_order_critical_exp_delta_stochastic_MultiSp(int div, double t_max, do
 	// Store linspace values in frame_tmeas.
 	
 
-    //vector <double> t_measure = logarithm10_time_bins(t_max, 1*dt);
-	vector <double> t_measure = linspace(40, 1200, 30);
+    vector <double> t_measure = logarithm10_time_bins(t_max, 1*dt);
+	//vector <double> t_measure = linspace(40, 1200, 30);
 	// Computes and returns ln-distributed points from t= 10^{0} to log10(t_max) (the latter rounded down to 1 decimal place) 
   	// Returns time-points measured on a natural logarithmic scale from e^{2} to e^ln(t_max) rounded down to one decimal place.
 
@@ -4856,15 +4947,15 @@ void first_order_critical_exp_delta_stochastic_MultiSp(int div, double t_max, do
 
 	// Use switchsort_and_bait() to swap values in frame_tmeas b/w [50, 400] with linspace(50, 400, 8) 
 	// and [400, 1200] with linspace(400, 1200, 9).
-	//frame_tmeas = switchsort_and_bait<double>(frame_tmeas, 50, 400, 8, "linspace", true);
-	//frame_tmeas = switchsort_and_bait<double>(frame_tmeas, 400, 1200, 9, "linspace", true);
-	//frame_tmeas = switchsort_and_bait<double>(frame_tmeas, 2000, 10000, 4, "linspace", true);
+	frame_tmeas = switchsort_and_bait<double>(frame_tmeas, 50, 400, 8, "linspace", true);
+	frame_tmeas = switchsort_and_bait<double>(frame_tmeas, 400, 1200, 9, "linspace", true);
+	frame_tmeas = switchsort_and_bait<double>(frame_tmeas, 2000, 10000, 4, "linspace", true);
 
 	// For correlation measurement, add linear window from 20 to 6000, with 300 points (spaced 20 apart).
 	//frame_tmeas = switchsort_and_bait<double>(frame_tmeas, 20, 6000, 300, "linspace", true);
 
 	// For spreading experiments, add linear window from 40 to 1200, with 30 points (spaced 40 apart).
-	frame_tmeas = switchsort_and_bait<double>(frame_tmeas, 40, 1200, 30, "linspace", true);
+	//frame_tmeas = switchsort_and_bait<double>(frame_tmeas, 40, 1200, 30, "linspace", true);
 
 
 	if(t_measure[t_measure.size()-1] > 90000)
@@ -4874,7 +4965,7 @@ void first_order_critical_exp_delta_stochastic_MultiSp(int div, double t_max, do
 		//frame_tmeas.erase(std::remove_if(frame_tmeas.begin(), frame_tmeas.end(), 
 		//[](double x){return (x > 50000.0 && x < 100000.0);}), frame_tmeas.end());
 		// Create linear window from 50000 to 100000, with 26 points (spaced 2500 apart).
-		vector <double> t_frame_linearwindow = linspace(60000, 100000, 21); 
+		vector <double> t_frame_linearwindow = linspace(80000, 120000, 11); 
 		// Rounded down to 1 decimal place.
 		// Insert the linear window to frame_tmeas vector after the element in frame_tmeas that is just less than the first element in t_frame_linearwindow.
 		auto it = std::upper_bound(frame_tmeas.begin(), frame_tmeas.end(), t_frame_linearwindow[0]);

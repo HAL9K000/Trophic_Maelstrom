@@ -4,7 +4,7 @@ int main(int argc, char *argv[])
 {
   increase_stack_limit(2048L); //Increase stack limit to 512 MB.
 
-
+  string preFIX; // Prefix for the output files
   double a =0.575;
   double c, gmax, alpha, d, rW, W0, t_max, dt, dx; //int g, div;
   double a_start, a_end; double r; double dP; // Kick for high initial state
@@ -60,9 +60,13 @@ int main(int argc, char *argv[])
 
     cout << "Enter kick for high state: ";
     cin >> dP;
+
+    cout << "Enter Prefix (common choices include 'DiC-REF', 'DDM-DiC-BURNIN', 'nDiC' etc.) If not provided, default value: " 
+        + prefix + " will be used: ";
+    cin >> preFIX;
   }
   // If the user has entered the correct number of arguments, then the arguments are read from the command line.
-  else if(argc == 9)
+  else if(argc == 10)
   {
     dt = atof(argv[1]);
     t_max = atof(argv[2]);
@@ -72,13 +76,13 @@ int main(int argc, char *argv[])
     a_end = atof(argv[6]);
     div = atoi(argv[7]);
     dP = atof(argv[8]);
-    //preFIX = argv[9];
+    preFIX = argv[9];
   }
   else
   {
     cout << "Please enter the correct number of arguments.\n";
-    cout << "The correct number of arguments is 8.\n";
-    cout << "The arguments are as follows: dt, t_max, g, r, a_start, a_end, div, dP\n";
+    cout << "The correct number of arguments is 9.\n";
+    cout << "The arguments are as follows: dt, t_max, g, r, a_start, a_end, div, dP, Prefix\n";
     exit(1);
   }
 
@@ -102,6 +106,19 @@ int main(int argc, char *argv[])
   set_global_system_params(dt, dx); //Set the global parameters for the simulation.
   cout << "Global parameters set, with dt/2.0 = " << dt2 << " and dx*dx = " << dx2 <<  " and 1/(dx*dx) = " << dx1_2 << "\n";
 
+  cout << "\n=============================================================\n";
+
+  if(preFIX == "N/A" || preFIX == "n/a" || preFIX == "NA" || preFIX == "na" || preFIX == "N" || preFIX == "n" || preFIX == "")
+  {
+    cout << "No prefix provided. Using default prefix: " << prefix << endl;
+    preFIX = prefix;
+  }
+
+  set_Prefix(preFIX, 0.0, 0.0, false); //Set the prefix (and thus save folders) to the user-defined prefix.
+  cout << "Save directory for frames: " << frame_folder << "\n";
+  cout << "Save directory for preliminary data: " << prelim_folder << "\n";
+  cout << "Save directory for final data: " << stat_prefix << "\n";
+
   //D2Vec_Double Rho_0(Sp, vector<double> (g*g, 1.0));
   // Rho_0 is 2D [Spx(L*L)] vector initialised to 1.00.
 
@@ -121,30 +138,16 @@ int main(int argc, char *argv[])
   stringstream ast, est, dPo; ast << a_start; est  << a_end; dPo << dP;
 
   //string path_to_folder = frame_folder + ast.str() + "-" + est.str() + "_dP_" + dPo.str() + "_Geq_" + geq.str();
-  stringstream foldername;
-	foldername << "../Data/Rietkerk/Frames/Non-Stochastic/" << ast.str() << "-" << est.str() << "_dP_" << dPo.str() << "/";
-  string path_to_folder = "../Data/Rietkerk/Frames/Non-Stochastic/" + ast.str() + "-" + est.str() + "_dP_" + dPo.str();
+  //stringstream foldername;
+	//foldername << "../Data/Rietkerk/Frames/Non-Stochastic/" << ast.str() << "-" << est.str() << "_dP_" << dPo.str() << "/";
+  //string path_to_folder = "../Data/Rietkerk/Frames/Non-Stochastic/" + ast.str() + "-" + est.str() + "_dP_" + dPo.str();
+  string path_to_folder = frame_folder +  ast.str() + "-" + est.str() + "_dP_" + dPo.str();
   recursive_dir_create(path_to_folder);
 
-	// Creating a string stream instance to store the values of the parameters in the file name.
-	// This is done to avoid overwriting of files.
-  /**  
-	struct stat info2;
-	if( stat( foldername.str().c_str(), &info2 ) != 0 )
-	{
-		cout << "Cannot access " << foldername.str() << ". Creating directory." << endl;
-		const int dir_err = system(("mkdir " + foldername.str()).c_str());
-		if (-1 == dir_err)
-		{
-			printf("Error creating directory!n");
-			exit(1);
-		}
-	}
-  */
-
-  stringstream foldername2;
-	foldername2 << "../Data/Rietkerk/Prelims/Non-Stochastic/" << ast.str() << "-" << est.str() << "_dP_" << dPo.str() << "/";
-  path_to_folder = "../Data/Rietkerk/Prelims/Non-Stochastic/" + ast.str() + "-" + est.str() + "_dP_" + dPo.str();
+  //stringstream foldername2;
+	//foldername2 << "../Data/Rietkerk/Prelims/Non-Stochastic/" << ast.str() << "-" << est.str() << "_dP_" << dPo.str() << "/";
+  //path_to_folder = "../Data/Rietkerk/Prelims/Non-Stochastic/" + ast.str() + "-" + est.str() + "_dP_" + dPo.str();
+  path_to_folder = prelim_folder + ast.str() + "-" + est.str() + "_dP_" + dPo.str() + "/TimeSeries";
   recursive_dir_create(path_to_folder);
 	// Creating a string stream instance to store the values of the parameters in the file name.
 	// This is done to avoid overwriting of files.
@@ -161,24 +164,12 @@ int main(int argc, char *argv[])
 		}
 	}
   */
-  stringstream foldername3;
-	foldername3 << "../Data/Rietkerk/Non-Stochastic/";
   path_to_folder = "../Data/Rietkerk/Non-Stochastic";
   recursive_dir_create(path_to_folder);
+  recursive_dir_create("../Data/Rietkerk/Non-Stochastic/"+ std::to_string(SpB) +"Sp");
 	// Creating a string stream instance to store the values of the parameters in the file name.
 	// This is done to avoid overwriting of files.
 
-	struct stat info0;
-	if( stat( foldername3.str().c_str(), &info0 ) != 0 )
-	{
-		cout << "Cannot access " << foldername3.str() << ". Creating directory." << endl;
-		const int dir_err = system(("mkdir " + foldername3.str()).c_str());
-		if (-1 == dir_err)
-		{
-			printf("Error creating directory!n");
-			exit(1);
-		}
-	}
   first_order_critical_exp_delta(div, t_max, a_start, a_end, c, gmax, alpha, d, rW, W0, D, K, dt, dx, dP, r, g);
 
   //tupac_percolationDornic_2D(vector<vector<double>> &Rho, vector <double> &t_meas, auto &Rh0,
