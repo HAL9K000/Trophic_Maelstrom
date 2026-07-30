@@ -7,7 +7,7 @@ C++/CUDA simulation engines, a Python/Bash layer that collates simulation data, 
 
 ## Architecture
 
-![Pipeline architecture flowchart](docs/architecture_flowchart.png)
+![Pipeline architecture flowchart](architecture_flowchart.png)
 
 Data flows top to bottom through three layers, each writing into a predictable directory tree that the next
 layer consumes. Two feedback loops run the other way: `Utilities/synthetic_clump_generator.py` seeds

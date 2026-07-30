@@ -18,6 +18,7 @@ simulations/Riekerk_Sensei/Deprecated_Assets/
 *.png
 *.ai
 *.json
+!architecture_flowchart.png
 !MSThesisFigures/NPDPSchema.png
 !MSThesisFigures/TCPSchema.png
 !MSThesisFigures/DensityTable.png
