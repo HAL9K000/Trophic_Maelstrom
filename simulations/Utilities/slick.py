@@ -91,8 +91,8 @@ try:
     from dask.distributed import LocalCluster as _dask_LocalCluster
     from dask.diagnostics import ProgressBar as _dask_ProgressBar
 
-    #DASK_AVAILABLE = True
-    #print("Dask distributed is available and enabled for parallel processing.✅✅✅"); time.sleep(1)
+    DASK_AVAILABLE = True
+    print("Dask distributed is available and enabled for parallel processing.✅✅✅"); time.sleep(1)
 except ImportError as e:
     warnings.warn(f"Dask distributed not found: {e}. Switching to joblib... True CPU-GPU interops not available. ❌"); time.sleep(2)
 

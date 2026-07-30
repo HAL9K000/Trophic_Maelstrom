@@ -61,7 +61,7 @@ cat << EOF > ${2}_array.sh
 #SBATCH --array=0-$((k))%5
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=$((n))      # IDEALLY THIS SHOULD BE DYNAMICALLY SET, VARYING FOR EACH JOB.
-#SBATCH --mem-per-cpu=4G          # Memory per CPU core
+#SBATCH --mem-per-cpu=8G          # Memory per CPU core
 #SBATCH --time=14-00:00:00      # Total run time limit (DD-HH:MM:SS)
 #SBATCH --mail-type=FAIL
 #SBATCH --mail-type=REQUEUE
@@ -106,9 +106,9 @@ cd ..
 
 # Use the variables p1, p2, p3, p4, p5, p6, p7, p8, p9 to compile the source files:
 if [ $init -ne 2 ]; then
-    g++ -O3 -march=native -DSPB=${3} -DINIT=${init} multiSPDP.cpp order_${3}stocDP_unity.cpp -fopenmp -o ama_${2}_\${SLURM_ARRAY_TASK_ID}.out -std=c++23
+    g++ -O3 -march=native -DSPB=${3} -DINIT=${init} multiSPDP.cpp order_${3}stocDP_unity.cpp -L\${HOME}/Installs/fftw-3.3.10/lib -lfftw3_threads -lfftw3 -lm -fopenmp -o ama_${2}_\${SLURM_ARRAY_TASK_ID}.out -std=c++23
 else
-    g++ -O3 -march=native -DSPB=${3} -DINIT=${init} multiSPDP.cpp order_${3}stocDP_burnin.cpp -fopenmp -o ama_${2}_\${SLURM_ARRAY_TASK_ID}.out -std=c++23
+    g++ -O3 -march=native -DSPB=${3} -DINIT=${init} multiSPDP.cpp order_${3}stocDP_burnin.cpp -L\${HOME}/Installs/fftw-3.3.10/lib -lfftw3_threads -lfftw3 -lm -fopenmp -o ama_${2}_\${SLURM_ARRAY_TASK_ID}.out -std=c++23
 fi
 
 # Run the compiled program with the input parameters

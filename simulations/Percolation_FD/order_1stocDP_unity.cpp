@@ -26,7 +26,7 @@ int main(int argc, char* argv[])
 
   double k0, k1, k2; double d0, d1, d2, d3, d4; double s0;
 
-  dx = 0.1; //From Bonachela et al 2015 (in km)
+  dx = 0.01; //From Bonachela et al 2015 (in km)
   d0 = 0.00025 / 24.0; d1 = 0.0298; d2 = 0.05221; d3 = 0.00025 / 24.0; d4 = 0.025 / 24.0; //From Bonachela et al 2015 (in km^2/hr)
   s0 = 1 * sqrt(d0 / (dx * dx)); // ~ D0/(dx)^2 (in kg^{0.5}/(km hr))
 

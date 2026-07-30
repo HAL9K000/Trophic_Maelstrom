@@ -29,17 +29,32 @@
 #include <list>
 #include <thread>
 #include <mutex>
+//static std::mt19937_64 rng(time(NULL));
+#include <bits/stdc++.h>
 /** NOTE: The following include is for the exprtk library. Download and add to your project/include path.
 // if not already present. The library is used for parsing mathematical expressions. */
 #include <exprtk.hpp>
 /** NOTE: The following include is for the FFTW3 library. Download, configure, make, install and add to your project/include path.
 // if not already present. The library is used for performing discrete FFTs. */
 #include <fftw3.h>
+/** NOTE: The following include is for the Armadillo library. Download, configure, make, install and add to your project/include path.
+// if not already present. The library is used for linear algebra operations, and for GMM-clustering. */
+#if defined(ARMA)
+#include <armadillo>
+//using namespace arma;
+#endif
+/** NOTE: The following include is for the custom GMM embedder library linking between C++ and Python. Add the py_GMM_embedder.hpp file to your project/include path. 
+ * The library is used for performing GMM classification of frames using a Python implementation of sklearn.mixture.GaussianMixture. 
+ * Make sure to invoke this library with the appropriate compiler and linker flags for Python embedding, 
+ * which you can get from `python3-config --includes`, `python3-config -c "import numpy; print(numpy.get_include())"` and `python3-config --ldflags --embed` respectively.
+ */
+#if defined(CRITGMM)
+#include <py_GMM_embedder.hpp>
+#endif
 
 using namespace std::chrono;
-//static std::mt19937_64 rng(time(NULL));
-#include<bits/stdc++.h>
 using namespace std;
+
 #include <sys/resource.h>
 #include <omp.h>
 
@@ -69,7 +84,7 @@ namespace fs = std::filesystem;
 #elif SPB == 1
 	#include "MultiSPDP_constants_1Sp.h"
 #else
-	#error "Number of species not supported. Pass valid compiler flag as -DSPB=2 or -DSPB=3"
+	#error "Number of species not supported. Pass valid compiler flag as -DSPB=1, -DSPB=2 or -DSPB=3"
 #endif
 
 //------------------------- STRUCTS & TYPEDEFS --------------------------------------------------------------//
@@ -81,15 +96,19 @@ struct DoubleIntPair {
 };
 
 typedef std::vector<std::vector <double>> D2Vec_Double;
+typedef std::vector<std::vector <float>> D2Vec_Float;
 typedef std::vector<std::vector <int>> D2Vec_Int;
 
 typedef std::vector<std::vector <std::vector <double>>> D3Vec_Double;
+typedef std::vector<std::vector <std::vector <float>>> D3Vec_Float;
 typedef std::vector<std::vector <std::vector <int>>> D3Vec_Int;
 
 typedef std::vector<std::vector <std::vector <std::vector <double>>>> D4Vec_Double;
+typedef std::vector<std::vector <std::vector <std::vector <float>>>> D4Vec_Float;
 typedef std::vector<std::vector <std::vector <std::vector <int>>>> D4Vec_Int;
 
 typedef std::vector<std::vector<std::pair<double, double>>> D2Vec_Pair_Double;
+typedef std::vector<std::vector<std::pair<float, float>>> D2Vec_Pair_Float;
 typedef std::vector<std::vector<std::pair<int, int>>> D2Vec_Pair_Int;
 
 typedef std::vector<double> Vec_Double;
@@ -112,6 +131,8 @@ __constant__ DoubleIntPair d_r_frac[CuSpB]; /** ={ {fr_j, idx_j}, {fr_m, idx_m} 
 #endif
 
 
+
+
 inline const int SpB = Sp; //Number of biota species in the system.
 inline const int Sp_NV = Sp-1; //Number of grazer and predator species in system.
 inline const int Sp4_1 = 4*(Sp) +1; // Used for generating statistics on surviving runs
@@ -119,6 +140,12 @@ inline const int Sp2 = 2*Sp; // Used for generating statistics on surviving runs
 inline const int SpB2 = 2*SpB; // Used for generating statistics on surviving runs
 inline const int SpB3 = 3*SpB; // Used for generating statistics on surviving runs
 inline const int SpB4 = 4*SpB; // Used for generating statistics on surviving runs
+inline const int SpB5 = 5*SpB; // Used for generating statistics on surviving runs
+inline const int SpB6 = 6*SpB; // Used for generating statistics on surviving runs
+inline const int SpB7 = 7*SpB; // Used for GMM statistics (7 stats per species)
+
+// Global user-defined GMM selection parameters.
+inline int GMM_clusters = 2; inline bool GMM_periodic = true;
 
 // Global user-defined parameters for the Rietkerk model.
 inline double dt2 /** = dt/2.0*/; inline double dt6 /** = dt/6.0*/;
@@ -137,9 +164,12 @@ inline string frame_folder = "../Data/DP/Frames/Stochastic/"+ std::to_string(SpB
 inline string prelim_folder = "../Data/DP/Prelims/Stochastic/"+ std::to_string(SpB) +"Sp/"+ prefix +"_"; //Folder to store preliminary data.
 inline const string frame_prefix = "/FRAME_P_c_DP_G_"; //Prefix for frame files.
 inline const string gamma_prefix = "/GAMMA_G_"; //Prefix for gamma files.
+inline string gmmframe_prefix = "/GMM"+ std::to_string(GMM_clusters) +"_G_"; //Prefix for classified GMM frame files.
+inline string gmmcluster_prefix = "/CLUSTERED_FREQUENCIES_GMM"+ std::to_string(GMM_clusters) +"_G_"; //Prefix for classified GMM frame files.
 inline const string prelim_prefix = "/PRELIM_AGGRAND_P_c_ID_"; //Prefix for preliminary data files.
 inline const string replicate_prefix = "/PRELIM_TSERIES_P_c_DP_G_"; //Prefix for replicate time-series data files.
 inline const string movement_prefix = "/PRELIM_MOVSERIES_P_c_DP_G_"; //Prefix for movement time-series data files.
+inline const string critgmm_prefix = "/PRELIM_GMMSERIES_P_c_DP_G_"; //Prefix for GMM time-series data files.
 
 inline const string input_prefix = "/FRAME_T_"; //Prefix for input files.
 inline string stat_prefix = "../Data/DP/Stochastic/"+ std::to_string(SpB) +"Sp/1stCC_"  + prefix + "_P_c_G_";
@@ -307,6 +337,7 @@ void set_LocustPrefix(string& user_prefix);
 void set_input_Prefix(string& user_inputframepath, string& user_prefix, double user_a_c, double user_dP, double user_Geq = -1, double user_input_T = -1);
 void set_global_system_params(double dt, double dx);
 void set_global_predator_params(double Km);
+void set_global_GMM_params(int n_clusters, bool periodic);
 
 void display_symbol_table(const exprtk::symbol_table<double>& symbol_table);
 // Custom comparator for sorting pairs based on the squared distance
@@ -380,15 +411,34 @@ void save_prelimframe(D2Vec_Double &Rho_t, const string &parendir, const string 
 		double t, double dt, double dx, double dP, int r, int g, string header ="", bool overwrite = false, bool delete_previous = false);
 void save_frame(D2Vec_Double &Rho_t, const string &parendir, const string &filenamePattern, double a, double a_st, double a_end, 
 		double t, double dt, double dx, double dP, int r, int g, string header ="", bool overwrite = false);
+void save_clusterfreq(D2Vec_Double& clusterfreq, const string& parendir, const string& filenamePattern, double a, double a_st, double a_end, 
+    double t, double dt, double dx, double dP, int r, int g, string header  ="", bool overwrite = false);
 
 void save_framefileswrapper(int index, int tot_iter, int j, int thrID,  double t, double dt, double dx, D2Vec_Double &Rho_dt, D2Vec_Double &DRho,
 	D2Vec_Double &rho_rep_avg_var, vector<double> &t_meas, D2Vec_Double &gamma, D2Vec_Pair_Double &v_eff, double t_max, 
 	double a, double b, double c, int a_scalingfactor, double (&D)[Sp], double (&v)[SpB], double sigma[], double a_st, double a_end, double a_c,
 	double (&A)[SpB][SpB], double (&H)[SpB][SpB], double (&E)[SpB], double (&M)[SpB], double dP, int r, int g, double Gstar =-1., double Vstar = -1.);
-int save_prelimfileswrapper(int index, int tot_iter, int j, int thrID,  double t, double dt, double dx, D2Vec_Double &Rho_dt, D2Vec_Double &DRho, D2Vec_Double &Rho_M, D2Vec_Double &Rho_Mov,
-	D2Vec_Double &rho_rep_avg_var, vector<double> &t_meas, D2Vec_Double &gamma, D2Vec_Pair_Double &v_eff, double t_max, 
-	double a, double b, double c, int a_scalingfactor, double (&D)[Sp], double (&v)[SpB], double sigma[], double a_st, double a_end, double a_c, 
+int save_prelimfileswrapper(int index, int tot_iter, int j, int thrID,  double t, double dt, double dx, D2Vec_Double &Rho_dt, D2Vec_Double &DRho, D2Vec_Double &Rho_M,
+    D2Vec_Double &Rho_Mov, D2Vec_Double &Rho_CritGMM, D2Vec_Double &rho_rep_avg_var, vector<double> &t_meas, D2Vec_Double &gamma, D2Vec_Pair_Double &v_eff, 
+    double t_max, double a, double b, double c, int a_scalingfactor, double (&D)[Sp], double (&v)[SpB], double sigma[], double a_st, double a_end, double a_c,
 	double (&A)[SpB][SpB], double (&H)[SpB][SpB], double (&E)[SpB], double (&M)[SpB], double dP, int r, int g, double Gstar =-1., double Vstar = -1.);
+
+//-----------------------------GMM Classification and Spreading Experiment Machinery ----------------------------------//
+
+#if defined(ARMA)
+void GMM_frameclassification_MultiSp(const D2Vec_Float &Rho_t, D2Vec_Int &clusGMM_Rho_t, int j, double t, vector<arma::fvec> &means, vector<arma::frowvec> &weights,
+	float (&avg_logp)[SpB], int L, int n_components =2, float var_floor = 1e-6, int max_KM_iter = 100, int max_EM_iter = 100);
+#endif
+
+#if defined(CRITGMM)
+void save_GMMframefileswrapper(int index, int tot_iter, int j, int thrID, double t, double dt, double dx, D2Vec_Double &Rho_dt, D2Vec_Double &DRho, 
+    D2Vec_Double &Rho_GMM, D2Vec_Double &GMM_Clusterfreq, D2Vec_Double &rho_rep_avg_var, vector<double> &t_meas, D2Vec_Double &gamma, D2Vec_Pair_Double &v_eff, 
+    double t_max, double a, double b, double c, int a_scalingfactor, double (&D)[Sp], double (&v)[SpB], double sigma[], double a_st, double a_end, double a_c,
+	double (&A)[SpB][SpB], double (&H)[SpB][SpB], double (&E)[SpB], double (&M)[SpB], double dP, int r, int g, double Gstar =-1., double Vstar = -1.);
+void GMM_PYclassification_wrapper_MultiSp(const D2Vec_Double &Rho_t, const vector<int> &const_Spindex, D2Vec_Double &GMM_clusterfreq, D2Vec_Double &classified_GMMframes,
+	D2Vec_Double &Rho_CritGMM, int critGMM_index, int j, double a, double t, double dt, double dx, double dP, int L, 
+    int n_components =2, bool periodic =true, bool eval_freq =false, bool gen_GMMframe =false);
+#endif
 
 //------------------- Only Vegetation -------------------//
 

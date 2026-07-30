@@ -1,3 +1,6 @@
+#if defined(CRITGMM)
+#define BRIDGE_IMPORT_ARRAY  // This TU owns the NumPy C API symbols and calls PythonBridge::init()
+#endif
 #include "MultiSPDP.h"
 
 int main(int argc, char *argv[])
@@ -32,11 +35,11 @@ int main(int argc, char *argv[])
 
   double k0, k1, k2; double d0, d1, d2, d3, d4; double s0, s1, s2; double v1, v2; double dtv1, dtv2;
   
-  dx= 0.1 ; //From Bonachela et al 2015 (in km)
+  //dx= 0.01 ; //From Bonachela et al 2015 (in km)
   d0 = 0.00025/24.0; d1=0.0298; d2= 0.05221; d3 = 0.00025/24.0; d4= 0.025/24.0; //From Bonachela et al 2015 (in km^2/hr)
   s0 = 1*sqrt(d0/(dx*dx)); // ~ D0/(dx)^2 (in kg^{0.5}/(km hr))
   if(dx > 0.05)
-  {
+  { 
     s1 = 1; s2 = 3; // ~ D/(dx)^2 (in kg^{0.5}/(km hr))  
   }
   else
@@ -72,7 +75,7 @@ int main(int argc, char *argv[])
 
   
 
-  double Km = pow(10.0, 1.22)*pow(mPredator, -0.31); // Carrying capacity of predator in kg/km^2s
+  double Km = pow(10.0, 1.22)*pow(mPredator, -0.31); //Carrying capacity of predator in kg/km^2s
 
   //double Gstar = mm/((em -mm*hjm)*ajm); //Steady state for grazer.
   double H[SpB][SpB] ={{0, hij, 0}, 
@@ -113,6 +116,9 @@ int main(int argc, char *argv[])
 
   cout << "This is a 3Sp (Three) Stochastic Stochastic DP Model Script WITH  UNIT INITIALISATION OF CONSUMERS\n";
   cout << "Header Species Check: " << std::to_string(SpB) << "\n";
+  #if defined(CRITGMM)
+  cout << "This script is set to perform GMM CLASSIFICATION of frames \n";
+  #endif
 
   cout << "\n============================================================\n";
 
@@ -233,6 +239,18 @@ int main(int argc, char *argv[])
   int dtV[SpB] = {0, max(1, int(round(dtv1/dt))), max(1, int(round(dtv2/dt)))};
   cout << "Values of dtV for the grazer and predator are: " << dtV[1] << " and " << dtV[2] << " respectively.\n";
 
+  #if defined(CRITGMM)
+  int n_clusters =2; bool periodic = true; // Default parameters for GMM classification of frames.
+  set_global_GMM_params(n_clusters, periodic); //Set the global parameters for the GMM classification of frames.
+  cout << "Global GMM parameters set, with n_clusters = " << GMM_periodic << " and periodicity = " << GMM_clusters << "\n";
+
+  // Locate gmm_classifier.py in ../Utilities/ relative to this executable.
+  std::string exe_path(argv[0]);
+  std::string exe_dir   = exe_path.substr(0, exe_path.find_last_of("/\\"));
+  std::string script_dir = exe_dir + "/../Utilities";
+  PythonBridge::init(script_dir);
+  cout << "Python bridge initialised. GMM classifier loaded from: " << script_dir << "\n";
+  #endif
   // Equations for MFT E Eqilibrium values  as functions of a (Rainfall).
 
   
@@ -242,10 +260,10 @@ int main(int argc, char *argv[])
 
   
   string MFT_V = std::to_string(1.0); string MFT_PreV = std::to_string(1.0);
-  string MFT_G = std::to_string(0.1);
-  string MFT_PreG = std::to_string(0.1);
-  string MFT_Pr = std::to_string(0.1);
-  string MFT_PrevPr= std::to_string(0.1);
+  string MFT_G = std::to_string(1.0);
+  string MFT_PreG = std::to_string(1.0);
+  string MFT_Pr = std::to_string(1.0);
+  string MFT_PrevPr= std::to_string(1.0);
   
 
   MFT_Vec_CoexExpr.assign({ MFT_PreV, MFT_PreG, MFT_PrevPr, MFT_V, MFT_G, MFT_Pr});
@@ -268,7 +286,11 @@ int main(int argc, char *argv[])
   recursive_dir_create("../Data/DP/Stochastic/"+ std::to_string(SpB) +"Sp");
   
   first_order_critical_exp_delta_stochastic_MultiSp(div, t_max, a_start, a_end, a_c, b, c, D, v, sigma, A, H, E, M, pR, dtV, scaling_factor, dt, dx, dP, r, g, Gstar, -1.0);
-  
+
+  #if defined(CRITGMM)
+  PythonBridge::finalize();
+  cout << "Python bridge finalised.\n";
+  #endif
 
   return 0;
 }

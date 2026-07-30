@@ -10,7 +10,7 @@ import random
 SPB =3
 prefix ="HEXBLADE";
 L = 256; r =40;
-output_dir = f"../Input/DP/{SPB}Sp/{prefix}/L_{L}_a_0/"
+output_dir = f"../Input/Rietkerk/{SPB}Sp/{prefix}/L_{L}_a_0/"
 
 # Create the output directory if it does not exist
 os.makedirs(output_dir, exist_ok=True)
@@ -18,7 +18,7 @@ os.makedirs(output_dir, exist_ok=True)
 
 hex_length = {"  P(x; t)": 20}
 gauss_2sd_radius = {"  P(x; t)": 4}
-gauss_amp = {"  P(x; t)": (1, 1)}
+gauss_amp = {"  P(x; t)": (10000, 10000)} #Tuple of (max, min) amplitudes
 min_val = {"  P(x; t)": 0.0}
 percent_missing = {"  P(x; t)": 0.1}
 retain_cluster = {"  P(x; t)": 0}

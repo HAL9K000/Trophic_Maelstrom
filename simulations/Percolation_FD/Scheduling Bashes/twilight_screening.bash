@@ -89,9 +89,10 @@ start_screen(){
         # Start a new screen session and run the job
         #If init !=2, compile  order_${spb}stoc_test_rietkerk.cpp else compile order_${spb}stoc_burnin_rietkerk.cpp
         if [ $init -ne 2 ]; then
-            screen -dmS ${screen_names[$screen_index]} bash -c "cd .. ; g++-14 -O3 -march=native -DSPB=${spb} -DINIT=${init} multiSPDP.cpp order_${spb}stocDP_unity.cpp -L\${HOME}/.local/lib -lfftw3_threads -lfftw3 -lm -fopenmp -o ${screen_names[$screen_index]}_${prefix}.out -std=c++23; ./${screen_names[$screen_index]}_${prefix}.out $p1 $p2 $p3 $p4 $p5 $p6 $p7 $p8 $p9 $p10 $p11 $p12 &> stderr_${screen_names[$screen_index]}.txt; cd $curr_dir"
+            screen -dmS ${screen_names[$screen_index]} bash -c "cd .. ; g++-14 -O3 -march=native -DSPB=${spb} -DINIT=${init} multiSPDP.cpp order_${spb}stocDP_unity.cpp -larmadillo -L\${HOME}/.local/lib -lfftw3_threads -lfftw3 -lm -fopenmp -o ${screen_names[$screen_index]}_${prefix}.out -std=c++23; ./${screen_names[$screen_index]}_${prefix}.out $p1 $p2 $p3 $p4 $p5 $p6 $p7 $p8 $p9 $p10 $p11 $p12 &> stderr_${screen_names[$screen_index]}.txt; cd $curr_dir"
         else
-            screen -dmS ${screen_names[$screen_index]} bash -c "cd .. ; g++-14 -O3 -march=native -DSPB=${spb} -DINIT=${init} multiSPDP.cpp order_${spb}stocDP_burnin.cpp -L\${HOME}/.local/lib -lfftw3_threads -lfftw3 -lm -fopenmp -o ${screen_names[$screen_index]}_${prefix}.out -std=c++23; ./${screen_names[$screen_index]}_${prefix}.out $p1 $p2 $p3 $p4 $p5 $p6 $p7 $p8 $p9 $p10 $p11 $p12 $p13 &> stderr_${screen_names[$screen_index]}.txt; cd $curr_dir"
+            screen -dmS ${screen_names[$screen_index]} bash -c "cd .. ; g++-14 -O3 -march=native -DSPB=${spb} -DINIT=${init} multiSPDP.cpp order_${spb}stocDP_burnin.cpp -larmadillo -L\${HOME}/.local/lib -lfftw3_threads -lfftw3 -lm -fopenmp -o ${screen_names[$screen_index]}_${prefix}.out -std=c++23; ./${screen_names[$screen_index]}_${prefix}.out $p1 $p2 $p3 $p4 $p5 $p6 $p7 $p8 $p9 $p10 $p11 $p12 $p13 &> stderr_${screen_names[$screen_index]}.txt; cd $curr_dir"
+            #g++-14 -O3 -march=native -DSPB=3 -DINIT=0 -DCRITGMM multiSPDP.cpp order_3stocDP_unity.cpp -L${HOME}/.local/lib -lfftw3_threads -lfftw3 -lm -fopenmp  $(python3.13-config --includes) -I$(python3 -c "import numpy; print(numpy.get_include())") $(python3-config --ldflags --embed) -std=c++23 -o unity_3sp_critgmmTEST.out
         fi
         screen_index=$((screen_index+1))
     else

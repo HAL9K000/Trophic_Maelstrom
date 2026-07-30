@@ -8,7 +8,7 @@ The script is divided into the following sections:
    {in_dir}/{PREFIX}/L_{g}_a_{a_val}/dP_{dP}/Geq_{Geq}/T_{T}/FRAME_T_{T}_a_{a_val}_R_{R}.csv
    where terms in {} are variables that are provided as input to the script.
    In these csvs, the columns are as follows:
-   a_c	  x	  P(x; t)	 G(x; t)	 Pr(x; t)	 W(x; t)	 O(x; t) 
+   a_c	  x	  Sp1 ... SpN
    where the 2nd column onwards (indexed from 0) are the data columns and represent the species concentration (for each species) at each grid point.
    The columns are of length {g*g} (excluding the header row) where g is the grid size.
 
@@ -30,6 +30,8 @@ The script is divided into the following sections:
 import os
 import sys
 import time
+import subprocess
+import sys
 import math
 import pandas as pan
 import numpy as np
@@ -43,6 +45,7 @@ import glob
 import powerlaw as pwl
 import regex as re
 import fnmatch
+import copy
 from pathlib import Path
 import adjustText as adjT
 from collections import defaultdict
@@ -57,14 +60,75 @@ from scipy.optimize import curve_fit
 from scipy.signal import find_peaks
 
 
+# ============================= COMMAND-LINE OVERRIDES FOR KEY GLOBAL INPUTS =============================
+# This script is normally configured by hand-editing the "User inputs" globals below (SPB, in_dir, out_dir,
+# g, dP, Geq, R_max, a_vals, T_vals, TS_vals, TCorr_vals, prefixes, a_scaling) -- that hardcoded-default
+# workflow, including all the commented-out alternative values kept alongside each variable, is left
+# completely untouched below. This parser just adds an OPTIONAL command-line layer on top of it, mirroring
+# the --flag style used by Utilities/reorganise_dir.py and Utilities/reorganise_prelims_dir.py: any flag you
+# pass overrides the corresponding hardcoded default for that run; any flag you omit leaves the script's
+# existing hardcoded value in place, exactly as if this parser weren't here. Run
+# `python3 frame_builder.py --help` to see this description and the (approximate, may drift as the
+# hardcoded values below are edited for exploratory use) default noted for each flag.
+def parse_frame_builder_args():
+    parser = argparse.ArgumentParser(
+        description="Visualise reorganised Rietkerk/DP simulation Frame and Prelim data (see Utilities/reorganise_dir.py "
+                     "and Utilities/reorganise_prelims_dir.py) as heatmap images/videos and summary plots. "
+                     "All flags are optional -- any flag left unset falls back to this script's hardcoded default "
+                     "(edit the 'User inputs' section below to change those defaults for your own runs).")
+    parser.add_argument("--SPB", type=int, default=None,
+                         help="Number of species in the model, i.e. SpB (1, 2 or 3) (script default: 3).")
+    parser.add_argument("--indir", default=None,
+                         help="Root input directory containing the reorganised Frame/Prelim data, i.e. in_dir "
+                              "(example input:: '../Data/Rietkerk/Reorganised_Frames/Stoc/{SPB}Sp/ASCALE_20_100_HsX/').")
+    parser.add_argument("--outdir", default=None,
+                         help="Root output directory for generated images/videos/plots, should be different from indir, i.e. out_dir "
+                              "(example input:: '../../Images/{SPB}Sp/ASCALE_20_100_HsX/'). Created if it doesn't exist.")
+    parser.add_argument("--g", type=int, default=None,
+                         help="Grid size (side length) of the simulation frames, i.e. g (example input:: 256).")
+    parser.add_argument("--dP", type=int, default=None,
+                         help="Value of dP (perturbation kick) used in the reorganised subdirectory names (example input:: 10000).")
+    parser.add_argument("--Geq", type=float, default=None,
+                         help="Value of Geq used in the reorganised subdirectory names (example input:: 0.19208).")
+    parser.add_argument("--R_max", type=int, default=None,
+                         help="Maximum replicate index to process; -1 means auto-detect from maxR.txt (script default: -1).")
+    parser.add_argument("--prefixes", nargs="+", default=None,
+                         help="List of PREFIX subdirectory names to process, i.e. prefixes ")
+    parser.add_argument("--a_vals", nargs="+", type=float, default=None,
+                         help="List of 'a' (control parameter) values to process, i.e. a_vals "
+                              "(example input:: [0.026, 0.042, 0.05, 0.052]); leave this flag unset to auto-detect and process "
+                              "every 'a' value found in the input directory's a_vals.txt.")
+    parser.add_argument("--T_vals", nargs="+", type=float, default=None,
+                         help="List of T (Frame snapshot time) values to process, i.e. T_vals "
+                              "(example input:: a long hardcoded list, e.g. [0, 80000, 84000, ..., 190546] -- see script); "
+                              "leave this flag unset to auto-detect and process every T value found in each a-value's T_vals.txt.")
+    parser.add_argument("--TS_vals", nargs="+", type=float, default=None,
+                         help="List of TS (Prelim time-series end-time) values to process, i.e. TS_vals (example input:: [120226]); "
+                              "leave this flag unset to auto-detect and process every value found in each a-value's TimeSeries_vals.txt.")
+    parser.add_argument("--TCorr_vals", nargs="+", type=float, default=None,
+                         help="List of T values at which 2D correlation/synchrony data (see Utilities/glow_up.py's "
+                              "gen_2DCorr_data / Utilities/reorganise_dir.py's post_imgprocess) was generated, i.e. "
+                              "TCorr_vals (example input:: [4000.04]).")
+    parser.add_argument("--a_scaling", type=float, default=None,
+                         help="Scaling factor applied to 'a' values for display, i.e. a_scaling (script default: 1 (for regular model, for paper values of DP model use 0.001)).")
+    # parse_known_args (rather than parse_args) so that `import frame_builder` from a Jupyter notebook doesn't
+    # crash trying to parse the notebook kernel's own launch arguments (e.g. `-f kernel-xyz.json`) -- any such
+    # unrecognised arguments are just ignored here, none of our own flags are affected either way.
+    known_args, _unknown_args = parser.parse_known_args()
+    return known_args
+
+cli_args = parse_frame_builder_args()
+
+
 # User inputs.
 SPB = 3; # Number of species in the model
+if cli_args.SPB is not None: SPB = cli_args.SPB
 #in_dir = f"../Data/DP/Reorganised_Frames/Stoc/{SPB}Sp/DPCORR-20_100_WIN-4000-DsB6OTH2/" # FOR DP-CORR
 #in_dir = f"../Data/DP/Reorganised_Frames/Stoc/{SPB}Sp/DDParam_MFT/"
 #in_dir = f"../Data/DP/Reorganised_Frames/Stoc/{SPB}Sp/DPKVScParam_GAMTST/"
-in_dir = f"../Data/DP/Reorganised_Frames/Stoc/{SPB}Sp/DPParam_20_100_DSB6UNITY/"
+#in_dir = f"../Data/DP/Reorganised_Frames/Stoc/{SPB}Sp/DPParam_20_100_DSB6UNITY/"
 #out_dir = f"../../Images/{SPB}Sp/DPParam_MFT/" # FOR DP
-out_dir = f"../../Images/{SPB}Sp/DPParam_20_100_DSB6UNITY/" # FOR DP
+#out_dir = f"../../Images/{SPB}Sp/DPParam_20_100_DSB6UNITY/" # FOR DP
 #out_dir = f"../../Images/{SPB}Sp/DPKVScParam_SCALEMFT/" # FOR DP
 #out_dir = f"../../Images/{SPB}Sp/DPKVScParam_20_100_GAMTST/" # FOR DP
 
@@ -77,19 +141,31 @@ out_dir = f"../../Images/{SPB}Sp/DPParam_20_100_DSB6UNITY/" # FOR DP
 #in_dir = f"../Data/Rietkerk/Reorganised_Frames/Stoc/{SPB}Sp/GAM_GAU_20_100_TSTFD/"
 #out_dir = f"../../Images/{SPB}Sp/FD_GAU_20_100_GAMTST/"
 
+#in_dir = f"../Data/Rietkerk/Reorganised_Frames/Stoc/{SPB}Sp/StdParam_DOSSCALE/" # For D_Surface Water and S0 variation.
+#out_dir = f"../../Images/{SPB}Sp/StdPar_DOSSCALE/"
+
 #in_dir = f"../Data/Rietkerk/Reorganised_Frames/Stoc/{SPB}Sp/ASCALE_20_100_HsX/"
 #out_dir = f"../../Images/{SPB}Sp/ASCALE_20_100_HsX/"
 
+in_dir = f"../Data/Rietkerk/Reorganised_Frames/Stoc/{SPB}Sp/ASCALE_20_100_GAMPER/"
+out_dir = f"../../Images/{SPB}Sp/ASCALE_20_100_GamPerp/"
+
 #in_dir = f"../Data/Rietkerk/Reorganised_Frames/Stoc/{SPB}Sp/CORR-20_100_WIN-4000-HsXA0/"
 #out_dir = f"../../Images/{SPB}Sp/CORR-20_100_WIN-4000/"
+if cli_args.indir is not None: in_dir = cli_args.indir
+if cli_args.outdir is not None: out_dir = cli_args.outdir
 Path(out_dir).mkdir(parents=True, exist_ok=True)
 #prefixes = ["DIC-NREF-1.1HI", "DIC-NREF-0.5LI", "DIC-NREF-0.1LI"]
 
-#g = 128;  dP = 10000; Geq = 4.802  ; R_max= -1; #4.802    0.19208   0.096039         #0.2991     7.4774
-#g = 128;  dP = 5; Geq = 5  ; R_max= -1;
-g = 512;  dP = 1; Geq = 0 ; R_max= -1; #0.0032013  
+g = 256;  dP = 10000; Geq = 0.19208  ; R_max= -1; #4.802    0.19208   0.096039         #0.2991     7.4774
+#g = 256;  dP = 10000; Geq = 5  ; R_max= -1;
+#g = 512;  dP = 1; Geq = 0 ; R_max= -1; #0.0032013
 # Geq (for LOC case) 2.2007 0.088027 [2 SP] 2.2786 0.091143
 # Geq (for small ratio case) 3.0029 0.12012 [2 SP] 4.1569 0.16627
+if cli_args.g is not None: g = cli_args.g
+if cli_args.dP is not None: dP = cli_args.dP
+if cli_args.Geq is not None: Geq = cli_args.Geq
+if cli_args.R_max is not None: R_max = cli_args.R_max
 T_vals =[]; TS_vals =[];
 a_vals = []    
 
@@ -114,6 +190,8 @@ pastelpair_hex_list = ["#80b918", '#0091AD', "#2196f3", "#ff4f84", '#2E6F95', "#
 gammapair_hex_list =['#2E6F95', '#ff4f84']
 # Increasingly stormier blues
 trueblues_hex_list = ["#64B5F6", "#4EA8DE", "#5390D9", "#4180B7", '#2E6F95',  '#176A7e', '#1B5A6B', '#224B60', '#283C55', '#2E2F4A']
+
+diverging_comp_grad_hex_list =["#4180B7", "#5390D9", "#4EA8DE", "#64B5F6", "#77BEF8",  "#D4BE2DFF", "#AD991CFF", "#917F12FF"] # "#E3CE44FF",
 
 float_list = [0, 0.025, 0.05, 0.1, 0.2, 0.3, 0.5, 0.7, 0.85, 1]
 vmax =[500, 35, 40]
@@ -148,8 +226,11 @@ def set_figsizeSquare(SPB):
         square_SPB_Size = int(math.ceil(math.sqrt(SPB))) # Calculate the square size based on the number of species
         return (8 + 6*(square_SPB_Size-1), 6 + 6*(square_SPB_Size-1))
 
-def power_lawfit(x, A, exp):
+def decay_power_lawfit(x, A, exp):
         return A * (x ** (-exp))
+
+def power_lawfit(x, A, exp):
+        return A * (x ** (exp))
 
 def sci_notation(num, decimal_digits=1, precision=None, exponent=None):
     """
@@ -248,8 +329,8 @@ def auto_guess_avals_tvals(indir, PREFIX, a_vals = [], t_vals= []):
             return (None, None)
     #print(t_vals)        
     if len(t_vals) == 0:
-        for a in a_vals:
-            print(f"List of a values: {a_vals}")
+        print(f"List of a values: {a_vals}")
+        for a in a_vals: 
             #a = int(a) if a.is_integer() else a
             a = int(a) if is_integer(a) else a
             try:
@@ -263,7 +344,7 @@ def auto_guess_avals_tvals(indir, PREFIX, a_vals = [], t_vals= []):
         t_vals = sorted(list(set(t_vals)))
         # End of T loop
     return (a_vals, t_vals)
-    
+
 ''' # Summary of home_video(...)
 This function creates a video of the png data in the directory dir which has the structure:
 {filedir}/{prefixes}/L_{g}_a_{a_val}/dP_{dP}/Geq_{Geq}/T_{T}/{pngformat}
@@ -276,7 +357,18 @@ The same applies for pngdir (relative path to png files for given a, T, dP, Geq 
 '''
 def home_video(file_parendir, out_dir, prefixes, a_vals, T_vals, maxR, minR = 0, pngformat= "CombinedImg/BioConc_a_{a}_T_{T}_n_{R}.png", pngdir =  "{Pre}/L_{g}_a_{a}/dP_{dP}/Geq_{Geq}/T_{T}/",
                videoname="guess", video_relpath="guess", avals_txtdir = "{Pre}/a_vals.txt", Tvals_txtdir = "{Pre}/L_{g}_a_{a}/dP_{dP}/Geq_{Geq}/T_vals.txt",
-                maxR_txtdir = "{Pre}/L_{g}_a_{a}/dP_{dP}/Geq_{Geq}/T_{T}/maxR.txt"):
+                maxR_txtdir = "{Pre}/L_{g}_a_{a}/dP_{dP}/Geq_{Geq}/T_{T}/maxR.txt", format_H264 = True):
+
+    # If format_H264 is True, check if system is Linux and has ffmpeg installed. If not, provide a warning and set format_H264 to False.
+    if format_H264:
+        if sys.platform.startswith('linux'):
+            if shutil.which("ffmpeg") is None:
+                print("Warning: ffmpeg is not installed. H264 format will not be used. 👺👺")
+                format_H264 = False
+        else:
+            print("Warning: H264 format is presently only supported on Linux systems with ffmpeg installed. H264 format will not be used. 👺👺")
+            format_H264 = False
+
 
     min_T = 0; max_T = 0; inputmax_R = maxR;
     if len(T_vals) > 0:
@@ -365,13 +457,26 @@ def home_video(file_parendir, out_dir, prefixes, a_vals, T_vals, maxR, minR = 0,
             #Path(video_path).mkdir(parents=True, exist_ok=True) # Create the directory if it doesn't exist.
             video_name = video_relpath + videoname
             os.makedirs(video_relpath, exist_ok=True)
-            out = cv2.VideoWriter(video_name, cv2.VideoWriter_fourcc(*'mp4v'), 1, size)
-
+            out = cv2.VideoWriter(video_name, cv2.VideoWriter_fourcc(*'mp4v'), 2, size)
+            #out = cv2.VideoWriter(video_name, cv2.VideoWriter_fourcc(*'avc1'), 1, size)
             print(f"Saving {videoname} to Relative Path :\n {video_relpath}")
 
             for i in range(len(img_array)):
                 out.write(img_array[i])
             out.release()
+            # If format_H264 is True, try converting the video to H264 format using ffmpeg.
+            if format_H264:
+                try:
+                    h264_video_name = video_relpath + videoname.split(".")[0] + "_H264.mp4"
+                    command = f"ffmpeg -hide_banner -loglevel error -y -i {video_name} -c:v libx264 -crf 20 -preset veryslow {h264_video_name}"
+                    subprocess.run(command, shell=True)
+                    # Get size of original video and new video (in MB) and print the reduction in .
+                    original_size = os.path.getsize(video_name); new_size = os.path.getsize(h264_video_name);
+                    print(f"✅ Successfully converted {videoname} to H264 format. Original size: {original_size/1024/1024:.2f} MB, New size: {new_size/1024/1024:.2f} MB")
+                    # Then delete the original video.
+                    os.remove(video_name)
+                except subprocess.CalledProcessError:
+                    print(f"Error occurred while converting {videoname} to H264 format. The original video will be retained.")
         else:
             print(f"No images found for {Pre}. Skipping....")
         
@@ -479,10 +584,12 @@ def frame_visualiser(in_dir, out_dir, PREFIX, a_vals, T_vals, maxR, minR =0, plt
                     ax.set_title(r'$\rho_%g(t = %g)$,' % (s, T))
                     ax.xaxis.set(major_locator=mtick.MultipleLocator(g / 16), major_formatter = mtick.FormatStrFormatter('%g'))
                     ax.yaxis.set(major_locator=mtick.MultipleLocator(g / 16), major_formatter = mtick.FormatStrFormatter('%g'))
+                    # Remove all axis ticks and labels
+                    #ax.set_xticks([]); ax.set_yticks([])
                 #Set super title
                 fig.suptitle(r'$R = %g$, $dP = %g$, $n =%d$' % (a, dP, R))
-                
-                plt.savefig(savepath + f"CombinedImg/BioConc_a_{a}_T_{T}_n_{R}.png")
+                plt.tight_layout()
+                plt.savefig(savepath + f"CombinedImg/BioConc_a_{a}_T_{T}_n_{R}.png")#, dpi=400, transparent=True)
                 plt.close()
 
                 '''
@@ -806,6 +913,113 @@ def get_FRAME_CORRdata(indir, PREFIX, a_vals, focus_T_vals, corrsubdir="2DCorr/"
         # Finally replace all instances of np.inf with np.nan in the DataFrame
         corrdata.replace([np.inf, -np.inf], np.nan, inplace=True)
     return (corrdata, var_names)
+
+
+
+def get_FRAME_CLUSTERSTATS_EQdata(indir, PREFIX, a_vals, T_vals, statType = "MEAN_CLUSTER_SIZE", binType="GMM", nbins=2, 
+    clustered_filename = "{statType}.csv", clustsubdir= "CLUST/{binType}_{nbins}/",  var_labels= "deduce", a_scale = 1):
+
+    print(f"Provided a values: {a_vals} \n Provided T values: {T_vals}")
+    a_vals, T_vals = auto_guess_avals_tvals(indir, PREFIX, a_vals, T_vals)
+    if a_vals == None:
+        print("Exiting as no valid a values found..."); return;
+    a_scaled_vals = [a*a_scale for a in a_vals]
+    print(f"Discovered a values: {a_vals}")
+    if (a_scale != 1):
+        print(f"List of scaled a values: {a_scaled_vals}")
+    print(f"List of T values: {T_vals}")
+    #input("Press Enter to continue...")
+    
+    # Create a multi-indexed DataFrame
+    clustered_data = pan.DataFrame()
+    var_names = []
+    # Now populate the DataFrame with the data from the files
+
+    for a in a_vals:
+        for T in T_vals:
+            try:
+                try:
+                    df = pan.read_csv(indir + PREFIX + f"/L_{g}_a_{a}/dP_{dP}/Geq_{Geq}/T_{T}/{clustsubdir.format(binType=binType, nbins=nbins)}" 
+                        + clustered_filename.format(statType=statType), header=0)
+                except FileNotFoundError:
+                    print(f"{clustered_filename.format(statType=statType)} not found for a = {a}, T = {T}. Skipping....")
+                    continue
+                
+                df.columns = df.columns.astype(str)
+                df.columns = df.columns.str.strip()
+
+
+                if var_labels is not None and var_labels != "deduce":
+                    # If var_labels is provided and is not "deduce", then use the provided var_labels to filter the columns of the DataFrame 
+                    # (i.e. keep only the columns that contain any of the var_labels as a substring in their column name)
+                    try:
+                        df = df[[col for col in df.columns if any([label in col for label in var_labels])] ]
+                    except Exception as e:
+                        print(f"Error filtering columns with provided var_labels for a = {a}, T = {T} with error: {e}. Using all columns....")
+                
+                # Construct the multi-index for the DataFrame, which is [Prefix, maxR, a, T] where a is scaled by a_scale.
+                
+                # Try getting maxR from the dataframe from the column "Rmax" or "maxR" if it exists,
+                # otherwise is determined by reading the maximum value corresponding to _R_* in the df.columns
+                if "Rmax" in df.columns or "maxR" in df.columns:
+                    Rmax = df["Rmax"].iloc[0] if "Rmax" in df.columns else df["maxR"].iloc[0]
+                else:
+                    try:
+                        Rmax = max([int(col.split("_R_")[-1]) for col in df.columns if "_R_" in col]) + 1
+                    except:
+                        print(f"Could not determine maxR for a = {a}, T = {T}. Setting maxR to 0.")
+                        Rmax = 0
+
+                # Drop the columns "Rmax" or "maxR", "a" and "t" or "T" if they exist in the DataFrame
+                df = df.drop(columns=[col for col in df.columns if col in ["Rmax", "maxR", "a", "t", "T"]], errors='ignore')
+
+                # Also drop any columns that do not contain the string {statType} in their column name, as they are not relevant to the clustered stats data.
+                df = df[[col for col in df.columns if re.search(statType, col)]]
+
+                # If df is empty after dropping irrelevant columns, warn and skip to the next iteration
+                if df.empty:
+                    print(f"No relevant columns found for a = {a}, T = {T} after dropping columns that do not contain '{statType}'. Skipping....")
+                    continue
+
+                # Next construct the multi-index for the DataFrame
+                df.index = pan.MultiIndex.from_tuples([(PREFIX, Rmax, a*a_scale, T)]*len(df), names = ['Prefix', 'maxR', 'a', 'T'])
+
+                # Assign the data df to the appropriate index in the corrdata DataFrame
+                clustered_data = pan.concat([clustered_data, df], axis=0).sort_index(axis=0)
+
+                # Deduce variable names from the columns of the DataFrame if var_labels is set to "deduce"
+                if var_labels == "deduce":
+                    #The list of unique variables can be determined from the columns of the DataFrame as follows.
+                    #The list of unique variable names can be determined from the columns AVG[{statType}{{var1}}] ... AVG[{statType}{{varN}}]
+                    match_vars = r'AVG\[' + f'{statType}{{' +  r'(.*?)\}\]'
+
+                    file_var_names = list(set([re.search(match_vars, col).group(1) for col in df.columns if re.search(match_vars, col)]))
+                    var_names.extend(file_var_names)
+                    #var_names = list(set(var_names))
+
+            except Exception as e:
+                print(f" Unable to process {statType} data not found for a = {a}, T = {T} with error: {e}. Skipping....")
+                continue
+    
+
+    # Finally, remove duplicates from the list of variable names
+    var_names = list(set(var_names)) if var_labels == "deduce" else var_labels
+
+    # If no matching files were found for any (a, T) combination, clustered_data will be empty, and
+    # sort_index(level=['a', 'T'], ...) raises a TypeError on an empty MultiIndex rather than a no-op.
+    # Guard against that and return the empty result gracefully instead, matching the "not found, skipping"
+    # behaviour used elsewhere in this file.
+    if clustered_data.empty:
+        print(f"No {statType} cluster-statistics data found for PREFIX = {PREFIX} for any provided (a, T). Skipping....")
+        return clustered_data, var_names
+
+    # Finally sort the clustered DataFrame, first by ascending order of a in the MultiIndex, and then by ascending order of T in the MultiIndex (within each a value)
+    clustered_data = clustered_data.sort_index(level=['a', 'T'], ascending=[True, True])
+    return clustered_data, var_names
+
+
+
+    
 
 
 """ # Summary Description of get_FRAME_CLUSTERdata(...) (called by analyse_CLUSTERdata(...))
@@ -1238,6 +1452,205 @@ def analyse_FRAME_timeseriesData(indir, out_dir, prefixes=[], a_vals=[], T_vals 
         home_video(out_dir, out_dir, ["TimeSeries/Combined"], a_vals, [Tmax], 1, pngformat= "TimeSeries_AllPrefixes_a_{a}_dP_{dP}_Geq_{Geq}.png", videoname = f"TimeSeries_All_T_{Tmax}.mp4")
     '''
 
+'''# Summary Description of analyse_FRAME_CLUSTERSTATS_timeseriesData(...)
+This function analyses the cluster statistics timeseries data for each species and creates plots for each species for each Prefix and a value, with T as the x-axis.
+NOTE: This function assumes that the data is stored in the FILENAME (located  in the directory {in_dir}/{PREFIX}/L_{g}_a_{a_val}/dP_{dP}/Geq_{Geq}/T_{T}/{cluststatsubdir}/) 
+in the following format:
+Rmax, a, T, AVG[{statType}{{var1}}]}}] ... AVG[{statType}{{varN}}] VAR[{statType}{{var1}}] ... VAR[{statType}{{varN}}] {statType}{{var1}}_R_0 ... {statType}{{var1}}_R_R1 {statType}{{var2}}_R_0 ... {statType}{{varN}}_R_RN
+where {var} is one of the species names, and R1, ..., RN are the R values for which the cluster statistics data is available (NOTE: Rmax >= max(R1, ..., RN)).
+'''
+def analyse_FRAME_CLUSTERSTATS_timeseriesData(indir, out_dir, prefixes=[], a_vals=[], T_vals =[], statType = "MEAN_CLUSTER_SIZE", binType="GMM", nbins=2,
+                           filename = "{statType}*.csv", cluststatsubdir ="CLUST/{binType}_{nbins}/",  var_labels= "deduce",a_c=None, prelim_fit=None, a_scaling = 1):
+    if len(prefixes) == 0:
+        prefixes = [os.path.basename(subdir) for subdir in glob.glob(os.path.join(indir, '*/'))]
+    
+    sea.set_palette("husl")
+
+    colours = [hex_list[i][-1] for i in range(len(hex_list))]
+    colours_med = [hex_list[i][-4] for i in range(len(hex_list))]
+    colours_light = [hex_list[i][1] for i in range(len(hex_list))]
+    # Make init a_vals and T_vals as deep copies of a_vals and T_vals, so that they are not modified by the function calls.
+    init_a_vals = a_vals; init_T_vals = []#= copy.deepcopy(T_vals)
+    #init_a_vals = a_vals; init_T_vals = T_vals
+
+    # If a_c is provided, and is iterable, then scale each value by a_scaling.
+    if a_c is not None and a_c != "all":
+        if isinstance(a_c, (list, tuple, np.ndarray)):
+            a_c = [ac * a_scaling for ac in a_c]
+        else:
+            # Make a_c into a singleton list.
+            a_c = [a_c * a_scaling]
+        print(f"Critical a value(s) provided: {a_c}")
+
+    for Pre in prefixes:
+        print(f'For Prefix: {Pre}, init a values: {init_a_vals}, init T values: {init_T_vals}, a_scaling: {a_scaling}, binType: {binType}, nbins: {nbins}')
+        clustered_data, clustervariables = get_FRAME_CLUSTERSTATS_EQdata(indir, Pre, init_a_vals, T_vals=init_T_vals, statType= statType, binType=binType, nbins=nbins, 
+            clustered_filename= filename, clustsubdir= cluststatsubdir, var_labels= var_labels, a_scale=a_scaling)
+        ''' NOTE: clustervariables is a list of the variables in the data, which is used for plotting if var_labels = "deduce". Otherwise clustervariables is set to var_labels.
+        Note that the number of columns can vary for each a and T value, as R_max can vary, so we need to handle this.
+        The data is a MultiIndex DataFrame with Indices: Prefix, Rmax, a, T and columns:
+        "AVG[{statType}[{var}]], VAR[{statType}[{var}]], "{statType}[{var}]_R_0, .... "{statType}[{var}]_R_{RN}"
+        where {var} is one of the species names, t-delay is the time delay (T0 - T1) and {statType} is the type of statistic (e.g. MEAN_CLUSTER_SIZE, etc.)
+        and 0 < R1 ... RN <= Rmax (i.e. the number of actual replicates reported in the data may be less than Rmax)
+        '''
+        
+        if clustered_data.empty:
+            print(f"WARNING: clustered data of type {statType} found for {Pre}. Skipping....")
+            continue
+
+        print("====================================================================")
+        print(f"Clustered data of type {statType} for {Pre}:")
+        print("====================================================================\n")
+        #print(clustered_data.info())
+        print(clustered_data.head()); print(clustered_data.tail()); print(clustered_data.columns); print(clustered_data.index)
+
+
+        # Also report deduced variable names.
+        print("-------------------------------------------------------------------------\n")
+        print(f"Deduced variable names for clustered data of type {statType} for {Pre}: \t {clustervariables}")
+        print("-------------------------------------------------------------------------\n")
+
+        #print(f"Init a values: {init_a_vals}, Init T values: {init_T_vals}, a_scaling: {a_scaling}, binType: {binType}, nbins: {nbins}")
+        
+
+        dict_clustvar = { 'P(x; t)': r'$P(x; t)$', 'G(x; t)': r'$G(x; t)$', 'Pr(x; t)': r'$Pr(x; t)$',
+                            'GAM[G(x; t)]': r'$\gamma[G(x; t)]$', 'GAM[Pr(x; t)]': r'$\gamma[Pr(x; t)]$'}
+        
+        dict_statType = {"MEAN_CLUSTER_SIZE": r"$\mu_{ClusterSize}$", "NUM_CLUSTERS" : r"$N_{Clusters}$", "CLUS_DENSITY": r"$\langle \rho_{Cluster} \rangle_X$", 
+                         "OCCUPIED_SITE_FRAC": r"$\langle N(t) \rangle_X$", "MEAN_SQ_DIST_LCENTER": r"$\langle R^{2}_{Spr}(t) \rangle_X$", "MEAN_SQ_DIST_UCOM": r"$\langle R^{2}_{UCom}(t) \rangle_X$"}
+        dict_statType_long = {"MEAN_CLUSTER_SIZE": "Mean Cluster Size", "NUM_CLUSTERS" : "Number of Clusters", "CLUS_DENSITY": "Classified Frame Density",
+                            "OCCUPIED_SITE_FRAC": "Occupied Site Fraction", "MEAN_SQ_DIST_LCENTER": "Mean Squared Distance to Geometric Center", "MEAN_SQ_DIST_UCOM": "Mean Squared Distance to Global Center of Mass"}
+        
+        # Sort clustervariables in the order of dict_clustvar keys if var_labels = "deduce", else keep the order as is.
+        if var_labels == "deduce":
+            clustervariables = sorted(clustervariables, key = lambda x: list(dict_clustvar.keys()).index(x) if x in dict_clustvar.keys() else len(dict_clustvar.keys()))
+            print(f"Sorted variable names for plotting: {clustervariables}")
+        
+        # Save clustered data to csv file.
+        savecsvdir = out_dir + f"{Pre}/TimeSeries/ClusterStats/{binType}_{nbins}/"
+        Path(savecsvdir).mkdir(parents=True, exist_ok=True)
+        clustered_data.to_csv(savecsvdir + f"{statType}_clusterstats_dP_{dP}_Geq_{Geq}.csv")
+
+        # Get the list of a values and T values from the data.
+        a_scaled_vals_list = sorted(clustered_data.index.get_level_values('a').unique().to_list())
+        Tvals_list = sorted(clustered_data.index.get_level_values('T').unique().to_list())
+        Tmin = min(Tvals_list); Tmax = max(Tvals_list)
+        Tmin = int(Tmin) if float(Tmin).is_integer() else Tmin; Tmax = int(Tmax) if float(Tmax).is_integer() else Tmax
+
+        if a_c == "all":
+            # Set a_c to a_scaled_vals_list
+            a_c = a_scaled_vals_list
+
+        print("-------------------------------------------------------------------------\n")
+        print(f"List of scaled a values for clustered data of {statType}: {a_scaled_vals_list} \t with total entries: {len(a_scaled_vals_list)}")
+        print(f"List of T values for clustered data of {statType}: {Tvals_list} \t with total entries: {len(Tvals_list)}")
+        print(f"Range of T values for clustered data of {statType}: [{Tmin}, {Tmax}]")
+        print("-------------------------------------------------------------------------\n")
+        # Pause for 2 seconds to allow the user to read the printed information before plotting.
+        time.sleep(2)
+        
+        #List of T values for clustered data of MEAN_CLUSTER_SIZE: [0.0, 40.04, 50.05, 59.95, 69.96, 79.97, 89.98, 99.99, 199.98, 299.97, 399.96, 499.95, 600.05, 700.04, 800.03, 900.02, 1000.01, 2000.02, 3000.03, 4000.04, 5000.05, 5999.95, 6999.96, 7999.97, 8999.98, 9999.99, 12000.0, 14000.0, 16000.1, 18000.0, 20000.0, 22000.0, 24000.0, 26000.0, 28000.0, 30000.0, 32000.0, 34000.0, 36000.0, 38000.1, 40000.0, 45000.0, 50000.0, 55000.0, 60000.1, 65000.0, 70000.0, 75000.0, 80000.0, 85000.0, 90000.0, 95000.0, 100000.0, 105000.0, 110000.0, 115000.0, 120000.0, 120226.0, 130000.0, 135000.0, 140000.0]
+
+        for a in a_scaled_vals_list:
+            a = int(a) if float(a).is_integer() else a
+            savepngdir = savecsvdir + f"L_{g}/a_{a}/dP_{dP}/Geq_{Geq}/T_{Tmax}/"
+            Path(savepngdir).mkdir(parents=True, exist_ok=True)
+            fig, axs = plt.subplots(1, SPB, figsize = set_figsize(len(clustervariables)))
+            for s in range(len(clustervariables)):
+                data_A = clustered_data.loc[(slice(None), slice(None), a, slice(None)), :]
+                #Sort data_A by T values.
+                data_A = data_A.sort_index(level = 'T')
+                ax = axs[s] if len(clustervariables) > 1 else axs
+                # Plotting for a fixed a value, species and Prefix for all T values.
+                # RECALL, First column is R_max, then the AVG columns for surviving replicates, then AVG columns for all replicates, then VAR columns for all replicates, then the individual replicate columns.
+                # Plotting mean of surviving replicates
+                #label_surv = dict_statType[statType]
+                ax.plot(data_A.index.get_level_values('T'), data_A[f"AVG[{statType}{{{clustervariables[s]}}}]"], label = f"{dict_statType[statType]}",
+                        color = colours[s], linestyle = 'solid', linewidth = 2, alpha = 0.9)
+                # Overlay means with scatter points.
+                ax.scatter(data_A.index.get_level_values('T'), data_A[f"AVG[{statType}{{{clustervariables[s]}}}]"], color = colours[s], alpha = 0.5, s = 5)
+                # Plotting variance of surviving replicates using f"VAR[{statType}{{{clustervariables[s]}}}], using a shaded region to represent the variance.
+                err = 2*np.sqrt(data_A[f"VAR[{statType}{{{clustervariables[s]}}}]"])
+                ax.fill_between(data_A.index.get_level_values('T'), data_A[f"AVG[{statType}{{{clustervariables[s]}}}]"] - err, 
+                                data_A[f"AVG[{statType}{{{clustervariables[s]}}}]"] + err, color = colours_med[s], alpha = 0.45)
+
+                # Next, if a in a_c, use power-law fitting to plot the expected scaling behaviour.
+                if a_c is not None and a in a_c:
+                    # Estimate power-law fit between surviving mean data over time
+                    pwl_data = data_A[[f"AVG[{statType}{{{clustervariables[s]}}}" + "]"]].copy()
+                    pwl_data["T"] = data_A.index.get_level_values('T')
+                    pwl_data = pwl_data.dropna()
+                    pwl_data= pwl_data[pwl_data[f"AVG[{statType}{{{clustervariables[s]}}}]"] > 0]
+                    # Remove all negative entries from pwl_data
+                    # Next check if prelim_fit has been provided as a dict with varlabels as keys, and if so, try assigning xmin and xmax from there.
+                    if prelim_fit is not None and clustervariables[s] in prelim_fit:
+                        fit_params = prelim_fit[clustervariables[s]]
+                        tmin = fit_params.get("xmin", None)
+                        tmax = fit_params.get("xmax", None)
+                    #tmin=200; tmax =10000
+                    pwl_data = pwl_data[pwl_data["T"] >= tmin]  if tmin is not None else pwl_data
+                    pwl_data = pwl_data[pwl_data["T"] < tmax]  if tmax is not None else pwl_data
+                    # Create fit:
+                    try:
+                        # Initial guesses, get exp from prelim_fit if available, else use default value.
+                        A0 = pwl_data[f"AVG[{statType}{{{clustervariables[s]}}}]"].iloc[0]; #exp = 0.451
+                        if prelim_fit is not None and clustervariables[s] in prelim_fit:
+                            exp = prelim_fit[clustervariables[s]].get("exp", None)
+                            exp = exp if exp is not None else 0.451
+                            fitFunc = prelim_fit[clustervariables[s]].get("fitFunc", power_lawfit)
+                        popt, pcov = curve_fit(fitFunc, pwl_data["T"].values, pwl_data[f"AVG[{statType}{{{clustervariables[s]}}}]"].values, p0=[A0, exp], maxfev=50000)
+
+                        C_fit, delta_fit = popt
+                        C_err, delta_err = np.sqrt(np.diag(pcov))
+                        print(f"SciPy fit for {Pre} at a={a}, T = [{Tmin}, {Tmax}], stat = {statType}, species={clustervariables[s]}:")
+                        print(f"    C = {C_fit:.4g} ± {C_err:.4g}")
+                        print(f"    δ = {delta_fit:.4g} ± {delta_err:.4g}")
+                        x_fit= np.linspace(pwl_data["T"].min(), pwl_data["T"].max(), 100 )
+                        y_fit = fitFunc(x_fit, C_fit, delta_fit)
+                        print(f"Plotting...")
+                        ax.plot(x_fit, y_fit, color="indianred", linestyle='dashed', linewidth=2.25)
+
+                        # Add axis text with automatically placed text box using adjustText
+                        txts = []
+                        #print(f"Adding text annotation for {dict_varlabels[var_labels[s]]} power-law fit as... ")
+                        #print(r'$P_{S}($' + f"{dict_varlabels[var_labels[s]]}" +r'$) \propto S^{(-\delta)}, \delta = %.4g \pm %.3f$' % (delta_fit, delta_err))
+                        txts.append(ax.text(0.05, 0.05, f"{dict_statType[statType]}" +r'$ \: \propto t^{(-\delta)}, \: \delta = %.4g \pm %.3f$' % (delta_fit, delta_err),
+                            transform=ax.transAxes, fontsize=13, color="indianred",
+                            bbox=dict(boxstyle='round,pad=0.25', edgecolor='indianred', facecolor='white', alpha=0.6)))
+                        adjT.adjust_text(txts, ax=ax)
+                    except Exception as e:
+                        print(f"SciPy curve_fit failed for a={a}, T = [{Tmin}, {Tmax}], stat = {statType}, species={clustervariables[s]} with Error: {e}")
+
+
+
+                ax.set_xlabel(r'Time $(hr)$', fontsize = 12)
+                ax.set_ylabel(dict_statType_long[statType], fontsize = 12)
+                ax.set_title(f"{dict_clustvar[clustervariables[s]]}", fontsize = 14)
+                if clustervariables[s] == "P(x; t)":
+                    # Set the bottom ylimit to 0 if the existing y limit is negative.
+                    #ax.set_ylim(bottom = -0.05 if ax.get_ylim()[0] < 0 else ax.get_ylim()[0])
+                    ax.set_ylim(bottom = 1e-3 if ax.get_ylim()[0] < 0 else ax.get_ylim()[0])
+                # Set  to log scale.
+                ax.set_yscale('log')
+                ax.set_xscale('log')
+                ax.legend()
+            fig.suptitle(f"{dict_statType[statType]} For {Pre} at a = {a}, dP = {dP}, Geq = {Geq}" 
+                         +r", T $\in$" + f"[{Tmin}, {Tmax}]", fontsize = 16)
+            plt.savefig(savepngdir + f"TimeSeriesLOG_{statType}_clusterstats_a_{a}_dP_{dP}_Geq_{Geq}.png")
+            #plt.show()
+            plt.close()
+        # End of a loop
+        # Use home_video function to create a video of the plots.
+        home_video(out_dir, out_dir, prefixes=[f"{Pre}/TimeSeries/ClusterStats/{binType}_{nbins}"], a_vals= a_scaled_vals_list, T_vals=[Tmax], maxR= 1,
+                   pngformat= f"TimeSeriesLOG_{statType}_clusterstats" + "_a_{a}_dP_{dP}_Geq_{Geq}.png", pngdir= "{Pre}/L_{g}/a_{a}/dP_{dP}/Geq_{Geq}/T_{T}/",
+                   videoname = f"TimeSeriesLOG_{statType}_clusterstats_Tmin_{Tmin}_Tmax_{Tmax}.mp4", video_relpath= "{Pre}/Videos/{amin}-{amax}/")
+        # Note that there is only one png per a value, so the video will be a simple slideshow (and R_max = 1).
+        input("Press F to Continue...")
+    # End of Prefix loop                
+                
+
+   
+
 '''# Summary Description of analyse_FRAME_FFTPOWERdata(...)
 This function analyses the FFT POWER data for each species and creates plots for each species for each Prefix and a value, averaged over provided T values.
 It creates heatmaps of the power spectra for each species for each Prefix and a value, with frequency as the y-axis and a as the x-axis.
@@ -1245,8 +1658,6 @@ NOTE: This function assumes that the data is stored in the FILENAME the followin
 FREQ[{var1}] ... FREQ[{varN}]   POWER[{var1}]_MEAN_ALL ... POWER[{varN}]_MEAN_ALL POWER[{var1}]_MEAN_SURV ... POWER[{varN}]_MEAN_SURV k_R_0 ... POWER[{varN}]_R_{R_max}
 where {var} is one of the species names.
 It creates a Multi-Index DataFrame with Indices: Prefix, a, T, R and columns: FREQ[{var}], POWER[{var}]_MEAN_ALL, POWER[{var}]_MEAN_SURV, POWER[{var}]_R_{R_max}
-
-
 '''
 
 def analyse_FRAME_FFTPOWERdata(indir, out_dir, prefixes=[], a_vals=[], T_vals =[], Tavg_window_index = [-100000, 0], filename = "FFT_POWERspectra.csv", show_fundamental_freq=False, a_scaling=1,
@@ -1327,8 +1738,8 @@ def analyse_FRAME_FFTPOWERdata(indir, out_dir, prefixes=[], a_vals=[], T_vals =[
             Tavg["POWER[" + var_labels[s] + "]_MEAN_ALL"] = np.log10(Tavg["POWER[" + var_labels[s] + "]_MEAN_ALL"])
             Tavg["POWER[" + var_labels[s] + "]_MEAN_SURV"] = np.log10(Tavg["POWER[" + var_labels[s] + "]_MEAN_SURV"])
 
-        # Remove rows with FREQ[{var}] > 80
-        #Tavg = Tavg[Tavg["FREQ[" + var_labels[0] + "]"] <= 80]
+        # Remove rows with FREQ[{var}] > 60
+        #Tavg = Tavg[Tavg["FREQ[" + var_labels[0] + "]"] <= 60]
 
         # Iterating over the Pre, a indices, average over the last Tavg_window_index values of T and assign to new DataFrame.
         ''' FIX THIS LATER
@@ -1370,6 +1781,16 @@ def analyse_FRAME_FFTPOWERdata(indir, out_dir, prefixes=[], a_vals=[], T_vals =[
 
 
 
+        # T_vals[-1] may not actually have any FFT power-spectrum data on disk (e.g. the FFT_PowerSpect/
+        # post-processing stage was never run, or was only run for some T values) -- Tavg.loc[...] raises a
+        # bare KeyError in that case rather than the "not found, skipping" pattern used elsewhere in this
+        # file, so guard it explicitly here.
+        try:
+            Tavg.loc[(slice(None), slice(None), T_vals[-1]), :]
+        except KeyError:
+            print(f"No FFT power-spectrum data found for {Pre} at T = {T_vals[-1]}. Skipping....")
+            continue
+
         fig_SURV, axs_SURV = plt.subplots(1, num_species, figsize = set_figsize(num_species))
         for s in range(num_species):
 
@@ -1396,8 +1817,8 @@ def analyse_FRAME_FFTPOWERdata(indir, out_dir, prefixes=[], a_vals=[], T_vals =[
             #axs_SURV.set_yscale('log')
             ax_SURV.set_ylim(ax_SURV.get_ylim()[::-1])
             ax_SURV.yaxis.set_major_locator(mtick.MultipleLocator(5))
-            ax_SURV.tick_params(axis='x', labelsize=12) ; ax_SURV.tick_params(axis='y', labelsize=13)
-            ax_SURV.set_ylim(25,0)
+            ax_SURV.tick_params(axis='x', labelsize=13) ; ax_SURV.tick_params(axis='y', labelsize=13)
+            ax_SURV.set_ylim(60,0)
 
             if(show_fundamental_freq):
                 peaks_df_cols  = [ str(k) + str(type) for k in X for type in ['_peak_freqs', '_peak_mags'] ]
@@ -1430,9 +1851,9 @@ def analyse_FRAME_FFTPOWERdata(indir, out_dir, prefixes=[], a_vals=[], T_vals =[
                     peak_freqs = peaks_df.iloc[i, ::2].to_numpy()
                     peak_mags = peaks_df.iloc[i, 1::2].to_numpy()
                     # Plot the peak frequencies as a dashed line
-                    #ax_SURV.plot(X, peak_freqs, linestyle='--', color='tomato', linewidth=1.5, label='First Harmonic Peak' if i == 0 else "")
+                    ax_SURV.plot(X, peak_freqs, linestyle='--', color='lavenderblush', linewidth=2.5, label='First Harmonic Peak' if i == 0 else "")
                     # Plot the second harmonic peaks as a dashed line
-                    #ax_SURV.plot(X, peak_freqs * 2, linestyle='--', color='lightsalmon', linewidth=1.5, label='Second Harmonic Peak' if i == 0 else "")
+                    ax_SURV.plot(X, peak_freqs * 2, linestyle='-.', color='mistyrose', linewidth=2.5, label='Second Harmonic Peak' if i == 0 else "")
 
             # Only show y-axis values between 0 and 30
             #ax_SURV.set_ylim(0, 30)
@@ -1443,12 +1864,12 @@ def analyse_FRAME_FFTPOWERdata(indir, out_dir, prefixes=[], a_vals=[], T_vals =[
 
             # Add a colorbar to the plot
             cbar = fig_SURV.colorbar(plot, ax = ax_SURV)
-            cbar.ax.tick_params(labelsize=13); cbar.set_label(r'$log_{10}(Power)$', fontsize=14);
+            cbar.ax.tick_params(labelsize=14); cbar.set_label(r'$log_{10}(Power)$', fontsize=14);
         
         #fig_SURV.suptitle(r" Power Spectra vs Rainfall ($R$)" + f" For {Pre} at dP = {dP}, Geq = {Geq} averaged over T = {Twin_min} -- {Twin_max}")
         fig_SURV.suptitle(r" Power Spectra vs Rainfall ($R$)" + f" For {Pre} at dP = {dP}, Geq = {Geq} at Equilibrium")
         plt.tight_layout()
-        plt.savefig(savedir + f"FFT_POWER_NOPEAK_{Pre}_dP_{dP}_Geq_{Geq}_Tavg_{T_vals[-1]}_BWIN_0.5_DEF.png", dpi=400, transparent=True)
+        plt.savefig(savedir + f"FFT_POWER_PEAK_FINAL_{Pre}_dP_{dP}_Geq_{Geq}_Tavg_{T_vals[-1]}_BWIN_0.5_DEF.png", dpi=400, transparent=True)
         plt.show(); plt.close()
 
 
@@ -2287,7 +2708,7 @@ def analyse_FRAME_CLUSTEREDISTdata(indir, out_dir, prefixes=[], a_vals=[], T_val
             clustsubdir ="CLUST/{binType}_{nbins}/", binType="KMeans", nbins=2, var_labels= [ "P(x; t)" , "G(x; t)", "Pr(x; t)", "O(x; t)"],
              plot_binframes = False, CDF=True, a_c=None,  a_scaling = 1):
     
-    savefilename = re.sub(r'\.csv$', '', filename) + f"a_c_{a_c[0]}_FINAL" if a_c is not None else re.sub(r'\.csv$', '', filename) + "_FINAL"
+    savefilename = re.sub(r'\.csv$', '', filename) + f"a_c_{a_c[0]}_JUAN_PRED_ALT2_FINAL" if a_c is not None else re.sub(r'\.csv$', '', filename) + "_JUAN_FINAL"
     clustsubdir = clustsubdir.format(binType=binType, nbins=nbins)
     if len(prefixes) == 0:
         prefixes = [os.path.basename(subdir) for subdir in glob.glob(os.path.join(indir, '*/'))]
@@ -2301,7 +2722,8 @@ def analyse_FRAME_CLUSTEREDISTdata(indir, out_dir, prefixes=[], a_vals=[], T_val
     # Replace "#ff447d" in colours_med with "#FFCC00" if it exists.
     colours_med = [c if c != "#ff447d" else "#FFCC00" for c in colours_med]
 
-    #colours_med = trueblues_hex_list 
+    #colours_med = trueblues_hex_list  
+    #colours_med = diverging_comp_grad_hex_list
 
     init_a_vals = a_vals; init_T_vals = T_vals
 
@@ -2392,7 +2814,7 @@ def analyse_FRAME_CLUSTEREDISTdata(indir, out_dir, prefixes=[], a_vals=[], T_val
                             ax.scatter(data_T_var_a[col_size], 1 - data_T_var_a[col_freq], label = sci_notation(a,3, None, -3), #f"{a:.4g}", #color = "#915f78",
                                 #color = "#915f78",
                                 color = colours_med[a_scaled_vals.index(a) % len(colours_med)],
-                                marker = 'o', s = 15, alpha = 0.65)
+                                marker = 'o', s = 15, alpha = 0.65)#, zorder=5)
                             
                             counts = data_T_var_a[col_counts].astype(int)
                             if counts.sum() == 0:
@@ -2401,6 +2823,11 @@ def analyse_FRAME_CLUSTEREDISTdata(indir, out_dir, prefixes=[], a_vals=[], T_val
                             samples = pan.Series(np.repeat(data_T_var_a[col_size].values, counts.values.astype(int)))
                             fit = pwl.Fit(samples, discrete=True, verbose=True) #,xmin=3.8e3, xmin=7e3) #xmin=5, xmax=0.6e4
                             ##, xmax=5e4) #xmin=1.9e2, xmax=1.535e3) xmin=1e2, xmax=7e3)
+                            #if var_labels[s] == "G(x; t)":
+                            #    fit = pwl.Fit(samples, discrete=True, verbose=True, xmin=1e3, xmax=3e4)
+                            # Note for GMM 3 Grazer - xmin=1.5e3 (1e3) and xmax =2e4 (4e4/3e4) seems to work well.
+                            # Note for GMM 3 Predator - xmin= 2e3 and xmax=3e4 seems to work well.
+                            # Note for GMM 3 Consumers - xmin=4.9e3 /4.75e3/ 5e3/ 4.85e3 and xmax=3e4 seems to work well.
                             print(f"Power-law fit for {Pre} at a = {a}, T = {T}: alpha = {fit.alpha:.4g}, xmin = {fit.xmin}, D = {fit.D:.4g}")
 
                             # Plot the power-law fit as a dashed line.
@@ -2412,13 +2839,17 @@ def analyse_FRAME_CLUSTEREDISTdata(indir, out_dir, prefixes=[], a_vals=[], T_val
                             # We can estimate C from our data as: C = {(1 - data_T_var_a[col_freq]).iloc[data_T_var_a[col_size].searchsorted(fit.xmin)] * (fit.xmin**(fit.alpha - 1))}*(fit.alpha - 1)
                             C = ((1 - data_T_var_a[col_freq]).iloc[data_T_var_a[col_size].searchsorted(fit.xmin)] * (fit.xmin**(fit.alpha - 1)))*(fit.alpha - 1)
                             #x_fit = np.linspace(fit.xmin, data_T_var_a[col_size].max()*0.1, 100) - 50
-                            x_fit = np.linspace(fit.xmin, 5e4, 100)  #-35
-                            y_fit = (C/(fit.alpha - 1))*x_fit**(-(fit.alpha - 1))*1.02  # Slightly scale up y_fit to avoid overlap with data points.
-                            ax.plot(x_fit, y_fit, color="indianred", linestyle='dashed', linewidth=3)
+                            x_fit = np.linspace(fit.xmin, 3e4, 100)  #-35
+                            #if var_labels[s] == "G(x; t)":
+                            #    x_fit = np.linspace(1e3, 2e4, 100)  #-35
+                            #if var_labels[s] == "Pr(x; t)":
+                            #    x_fit = np.linspace(4.5e3, 4e4, 100)  #-35
+                            y_fit = (C/(fit.alpha - 1))*x_fit**(-(fit.alpha - 1))*1.0  # Slightly scale up y_fit to avoid overlap with data points.
+                            ax.plot(x_fit, y_fit, color="indianred", linestyle='dashed', linewidth=3.5, zorder=10)
                             # Add axis text with automatically placed text box using adjustText
                             txts = []
-                            txts.append(ax.text(0.05, 0.05, r'$P_{S}(T_{eq})[s \geq S] \propto S^{(1 -\tau)}, \tau = %.4g \pm %.3f$' % (fit.alpha, fit.sigma),
-                                    transform=ax.transAxes, fontsize=14.5, color="indianred",
+                            txts.append(ax.text(0.02, 0.05, r'$P_{S}(T_{eq})[s \geq S] \propto S^{(1 -\tau)}, \tau = %.4g \pm %.3f$' % (fit.alpha, fit.sigma),
+                                    transform=ax.transAxes, fontsize=14.5, color="indianred", #verticalalignment='bottom', horizontalalignment='left',
                                     bbox=dict(boxstyle='round,pad=0.25', edgecolor='indianred', facecolor='white', alpha=0.6)))
                             adjT.adjust_text(txts, ax=ax)
                             #ax.text(0.025, 0.025, r'$N_{S}(T_{eq})[s \geq S] \propto S^{-(\alpha - 1)}, \alpha = %.4g \pm %.3f$' % (fit.alpha, fit.sigma),
@@ -2430,9 +2861,14 @@ def analyse_FRAME_CLUSTEREDISTdata(indir, out_dir, prefixes=[], a_vals=[], T_val
                             ax.plot(data_T_var_a[col_size], 1 - data_T_var_a[col_freq], #label = f"a = {a}",
                             color = colours_med[a_scaled_vals.index(a) % len(colours_med)], linestyle = 'solid', linewidth = 1.25, alpha = 0.6)
                             # Superimpose scatter points for the data.
+                            #if a_c is not None and all(a < ac for ac in a_c):
+                            #    marker_style = 'D'  # Hexagon for a < a_c
+                            #elif a_c is not None and all(a > ac for ac in a_c):
+                            #    marker_style = 's'  # Square for a > a_c
+                            #else:
+                            marker_style = 'o'  # Circle for a == a_c
                             ax.scatter(data_T_var_a[col_size], 1 - data_T_var_a[col_freq], label = sci_notation(a,3, None, -3), #f"{a:.4g}",
-                                       color = colours_med[a_scaled_vals.index(a) % len(colours_med)], marker = 'o', s = 15, alpha = 0.65)
-
+                                       color = colours_med[a_scaled_vals.index(a) % len(colours_med)], marker = marker_style, s = 15, alpha = 0.65)
                     else:
                         ax.plot(data_T_var_a[col_size], data_T_var_a[col_freq], #label = f"a = {a}",
                             color = colours[a_scaled_vals.index(a) % len(colours)], linestyle = 'solid', linewidth = 1.25, alpha = 0.6)
@@ -2443,7 +2879,10 @@ def analyse_FRAME_CLUSTEREDISTdata(indir, out_dir, prefixes=[], a_vals=[], T_val
                 #ax.set_title(r"$P_{S}(T_{eq}) $" + var_labels[s] + f" at T = {T}")
                 ax.set_xlabel(r'Cluster Size ($S$)', fontsize=16)
                 if CDF:
-                    ax.set_ylabel(r'$P_{S}(T_{eq})[s \geq S]$',  fontsize=16)
+                    ax.set_ylabel(r'CCDF, $P_{S}(T_{eq})[s \geq S]$',  fontsize=16)
+                    if txts is not None and len(txts) > 0:
+                        print("Adjusting text annotations to avoid overlap...")
+                        #adjT.adjust_text(txts, ax=ax, force_static=(0.1, 0.05), force_explode=(0.1, 0.05))
                 else:
                     ax.set_ylabel(r'Normalised Frequency $P_{S}(T_{eq})$',  fontsize=16)
                 # Set both x and y axes to log scale.
@@ -2451,7 +2890,7 @@ def analyse_FRAME_CLUSTEREDISTdata(indir, out_dir, prefixes=[], a_vals=[], T_val
                 #Set x and y ticks fontsize
                 ax.tick_params(axis='x', labelsize=14) ;ax.tick_params(axis='y', labelsize=14)
                 # Set min y lim to 1e-4
-                ax.set_ylim(bottom=1e-4, top=1)
+                ax.set_ylim(bottom=0.8e-4, top=1)
                 ax.legend(fontsize=11.5, title=r"Vegetation Growth Rate $a$ (hr$^{-1}$)", title_fontsize=12)
             # End of s loop
             # If a_c is provided, use adjustText to avoid overlapping text annotations.
@@ -2481,7 +2920,7 @@ def analyse_FRAME_CLUSTEREDISTdata(indir, out_dir, prefixes=[], a_vals=[], T_val
 
 
 def analyse_PRELIMS_TIMESERIESdata(indir, out_dir, prefixes=[], a_vals=[], tseries_vals =[], serType = "TSERIES",
-                                   meanfilename = "Mean_{serType}_T_{TS}.csv", var_labels= [ "<<P(x; t)>_x>_r" , "<<G(x; t)>_x>_r", "<<Pr(x; t)>_x>_r"], a_c=None, a_scaling = 1):
+                                   meanfilename = "Mean_{serType}_T_{TS}.csv", var_labels= [ "<<P(x; t)>_x>_r" , "<<G(x; t)>_x>_r", "<<Pr(x; t)>_x>_r"], a_c=None, prelim_fit=None, a_scaling = 1):
     savefilename = re.sub(r'\.csv$', '', meanfilename.format(Pre="PREFIX", g="g", dP="dP", Geq="Geq", a="a", serType = serType, TS=tseries_vals[0]))
     if len(prefixes) == 0:
         prefixes = [os.path.basename(subdir) for subdir in glob.glob(os.path.join(indir, '*/'))]
@@ -2496,6 +2935,9 @@ def analyse_PRELIMS_TIMESERIESdata(indir, out_dir, prefixes=[], a_vals=[], tseri
     for label in include_col_labels:
         new_label = label.replace("(x; t)", r"(x,t)"); new_label = new_label.replace("<", r"\langle ").replace(">", r" \rangle")
         dict_varlabels[label] = r"$" + new_label + r"$"
+
+    print(f"include_col_labels: {include_col_labels}")
+    print(f"dict_varlabels: {dict_varlabels}")
 
     for Pre in prefixes:
         
@@ -2589,19 +3031,28 @@ def analyse_PRELIMS_TIMESERIESdata(indir, out_dir, prefixes=[], a_vals=[], tseri
                         label_all = r"$\mu_{all}(\rho_{%g})$" %(s) #Default label for TSERIES
                     ax.plot(data_all["t"], data_all["AVG[" + var_labels[s] + "]_SURV"], label = r"$\mu_{surv}($" + f"{var_labels[s]}" +r"$)$", color = colours[s], linestyle = 'solid', linewidth = 2, alpha = 0.9)
                     # Next, if a in a_c, use power-law fitting to plot the expected scaling behaviour.
-                    if a_c is not None and a in a_c and s== 0:
+                    if a_c is not None and a in a_c:
                         # Estimate power-law fit between surviving mean data over time
                         pwl_data = data_all[["t", "AVG[" + var_labels[s] + "]_SURV"]].dropna()
                         pwl_data= pwl_data[pwl_data["AVG[" + var_labels[s] + "]_SURV"] > 0]
                         # Remove all negative entries from pwl_data
-                        tmin=200; tmax =10000
+                        # Next check if prelim_fit has been provided as a dict with varlabels as keys, and if so, try assigning xmin and xmax from there.
+                        if prelim_fit is not None and var_labels[s] in prelim_fit:
+                            fit_params = prelim_fit[var_labels[s]]
+                            tmin = fit_params.get("xmin", None)
+                            tmax = fit_params.get("xmax", None)
+                        #tmin=200; tmax =10000
                         pwl_data = pwl_data[pwl_data["t"] >= tmin]  if tmin is not None else pwl_data
                         pwl_data = pwl_data[pwl_data["t"] < tmax]  if tmax is not None else pwl_data
                         # Create fit:
                         try:
-                            # Initial guesses.
-                            A0 = pwl_data["AVG[" + var_labels[s] + "]_SURV"].iloc[0]; exp = 0.451
-                            popt, pcov = curve_fit(power_lawfit, pwl_data["t"].values, pwl_data["AVG[" + var_labels[s] + "]_SURV"].values, p0=[A0, exp], maxfev=10000)
+                            # Initial guesses, get exp from prelim_fit if available, else use default value.
+                            A0 = pwl_data["AVG[" + var_labels[s] + "]_SURV"].iloc[0]; #exp = 0.451
+                            if prelim_fit is not None and var_labels[s] in prelim_fit:
+                                exp = prelim_fit[var_labels[s]].get("exp", None)
+                                exp = exp if exp is not None else 0.451
+                                fitFunc = prelim_fit[var_labels[s]].get("fitFunc", power_lawfit)
+                            popt, pcov = curve_fit(fitFunc, pwl_data["t"].values, pwl_data["AVG[" + var_labels[s] + "]_SURV"].values, p0=[A0, exp], maxfev=50000)
 
                             C_fit, delta_fit = popt
                             C_err, delta_err = np.sqrt(np.diag(pcov))
@@ -2609,13 +3060,15 @@ def analyse_PRELIMS_TIMESERIESdata(indir, out_dir, prefixes=[], a_vals=[], tseri
                             print(f"    C = {C_fit:.4g} ± {C_err:.4g}")
                             print(f"    δ = {delta_fit:.4g} ± {delta_err:.4g}")
                             x_fit= np.linspace(pwl_data["t"].min(), pwl_data["t"].max(), 100 )
-                            y_fit = power_lawfit(x_fit, C_fit, delta_fit)
+                            y_fit = fitFunc(x_fit, C_fit, delta_fit)
                             print(f"Plotting...")
                             ax.plot(x_fit, y_fit, color="indianred", linestyle='dashed', linewidth=2.25)
 
                             # Add axis text with automatically placed text box using adjustText
                             txts = []
-                            txts.append(ax.text(0.05, 0.05, r'$P_{S}(\rho_{surv}($' + f"{dict_varlabels[s]}" +r"$[t]) \propto S^{(-\delta)}, \delta = %.4g \pm %.3f$" % (delta_fit, delta_err),
+                            #print(f"Adding text annotation for {dict_varlabels[var_labels[s]]} power-law fit as... ")
+                            #print(r'$P_{S}($' + f"{dict_varlabels[var_labels[s]]}" +r'$) \propto S^{(-\delta)}, \delta = %.4g \pm %.3f$' % (delta_fit, delta_err))
+                            txts.append(ax.text(0.05, 0.05, r'$P_{S}($' + f"{dict_varlabels[var_labels[s]]}" +r'$) \propto S^{(-\delta)}, \delta = %.4g \pm %.3f$' % (delta_fit, delta_err),
                                 transform=ax.transAxes, fontsize=13, color="indianred",
                                 bbox=dict(boxstyle='round,pad=0.25', edgecolor='indianred', facecolor='white', alpha=0.6)))
                             adjT.adjust_text(txts, ax=ax)
@@ -3315,6 +3768,15 @@ def analyse_PRELIMS_EQdata(indir, out_dir, prefixes=[], a_vals=[], TS_vals =[], 
         #Save the data to a csv file
         Tavg.to_csv(savedir + f"DEBUG_{savefilename}_Twin_{Twin_min}_{Twin_max}_dP_{dP}_Geq_{Geq}.csv")
 
+        # If Tavg_window_index doesn't overlap any T value actually present in the data, Tavg stays empty and
+        # never gets a MultiIndex assigned to it -- the Tavg.loc[(slice(None), ..., TS), :] tuple-of-slices
+        # lookup further below then raises "TypeError: unhashable type: 'slice'" rather than the "not found,
+        # skipping" pattern used elsewhere in this file, so guard against it explicitly here.
+        if Tavg.empty:
+            print(f"No data found for {Pre} in the averaging window {Tavg_window_index[0]} -- {Tavg_window_index[1]} "
+                  f"(check that Tavg_window_index overlaps the actual T values present in the data). Skipping....")
+            continue
+
         '''If plt_violin is True, then create violin plots of the data for each species.
         This is by iterating over the Pre, a indices, grabbing col data for each species lying between Twin_min and Twin_max,
         and concatenating the data to a single Df, which is then used to create the violin plots.
@@ -3371,7 +3833,8 @@ def analyse_PRELIMS_EQdata(indir, out_dir, prefixes=[], a_vals=[], TS_vals =[], 
             Tavg_TS = Tavg.loc[(slice(None), slice(None), slice(None), slice(None), slice(None), TS), :]
             # For all entries where "AVG[<<P(x; t)>_x>_r]_SURV" is 0, set corresponding 
             # "AVG[<<G(x; t)>_x>_r]_ALL", "AVG[<<G(x; t)>_x>_r]_SURV",  "AVG[<<G(x; t)>_x>_r]", VAR[<<G(x; t)>_x>_r]_SURV, VAR[<<G(x; t)>_x>_r]_ALL, VAR[<<G(x; t)>_x>_r] to 0.
-            #Tavg_TS.loc[Tavg_TS["AVG[" + var_labels[0] + "]_SURV"] == 0, ["AVG[" + var_labels[1] + "]_ALL", "AVG[" + var_labels[1] + "]_SURV", "AVG[" + var_labels[1] + "]", "VAR[" + var_labels[1] + "]_SURV", "VAR[" + var_labels[1] + "]_ALL", "VAR[" + var_labels[1] + "]"]] = 0
+            #Tavg_TS.loc[Tavg_TS["AVG[" + var_labels[0] + "]_SURV"] == 0, ["AVG[" + var_labels[1] + "]_ALL", "AVG[" + var_labels[1] + "]_SURV", "AVG[" + var_labels[1] + "]", 
+            # "VAR[" + var_labels[1] + "]_SURV", "VAR[" + var_labels[1] + "]_ALL", "VAR[" + var_labels[1] + "]"]] = 0
 
             # Set ALL ENTRIES of Tavg_TS with a < 0.0018 to 0.
             #Tavg_TS.loc[Tavg_TS.index.get_level_values('a') < 0.00178, :] = 0
@@ -3389,8 +3852,11 @@ def analyse_PRELIMS_EQdata(indir, out_dir, prefixes=[], a_vals=[], TS_vals =[], 
                     # Get maximum value of R for the Prefix, a, Twindow, TS.
                     Rmax = Tavg_TS.loc[(slice(None), Tavg_TS_all.index.get_level_values('a')[i], slice(None), slice(None), slice(None), TS), :].index.get_level_values('R').max() + 1;
                     txt = f"{100*Rsurv/Rmax:.1f} %"
-
-                    ax.annotate(txt, (Tavg_TS_all.index.get_level_values('a')[i], Tavg_TS_all["AVG[" + var_labels[s] + "]_SURV"][i]), fontsize = 'x-small', color = 'grey', alpha = 0.35)
+                    try:
+                        ax.annotate(txt, (Tavg_TS_all.index.get_level_values('a')[i], Tavg_TS_all["AVG[" + var_labels[s] + "]_SURV"][i]), fontsize = 'x-small', color = 'grey', alpha = 0.35)
+                    except Exception as e:
+                        print(f"Error annotating point for {Pre} at a = {Tavg_TS_all.index.get_level_values('a')[i]}, T = {TS}, var = {var_labels[s]}: {e}")
+                        continue
                 # Infill variance for surviving replicates
                 err = 2*np.sqrt(Tavg_TS_all["VAR[" + var_labels[s] + "]_SURV"])
                 ax.fill_between(Tavg_TS_all.index.get_level_values('a'), Tavg_TS_all["AVG[" + var_labels[s] + "]_SURV"] - err,
@@ -3457,7 +3923,8 @@ def analyse_PRELIMS_EQdata(indir, out_dir, prefixes=[], a_vals=[], TS_vals =[], 
                 # Drop rows where col entries for col "var_labels[0]" (vegetation) is 0.
                 Tbox = Tbox[~(Tbox[var_labels[0]] == 0)]
                 # Also drop rows where col entries for either "var_labels[1]" (grazer) or "var_labels[2]" (predator) is 0.
-                Tbox = Tbox[~((Tbox[var_labels[1]] == 0) | (Tbox[var_labels[2]] == 0))]
+                if len(var_labels) >= 2:
+                    Tbox = Tbox[~((Tbox[var_labels[1]] == 0) | (Tbox[var_labels[2]] == 0))]
             # Plotting the box/violin plots for each species.
             # NOTE: Seaborn's violinplot function does NOT support NON-UNIQUE multi-indexes, so we need to reset the index.
             Tbox_flat = Tbox.reset_index()
@@ -3513,8 +3980,9 @@ def analyse_PRELIMS_EQdata(indir, out_dir, prefixes=[], a_vals=[], TS_vals =[], 
                 #'''              
                 #ax.set_ylim(bottom = -0.05); ax.set_xlim(right= 0.014)
                 if serType == "MOVSERIES" and var_labels[s] in dict_var_labels.keys():
-                    #ax.set_title(r" $ P[$ " +f"{dict_var_labels[var_labels[s]]}" + r"$ ]$")
-                    #ax.set_ylabel(r" $ P[$ " +f"{dict_var_labels[var_labels[s]]}" + r"$ ]$", fontsize=16)
+                    ax.set_title(r" $ P[$ " +f"{dict_var_labels[var_labels[s]]}" + r"$ ]$")
+                    ax.set_ylabel(r" $ P[$ " +f"{dict_var_labels[var_labels[s]]}" + r"$ ]$", fontsize=16)
+                    ''' #Optional Twin axis handling for the two variables in MOVSERIES case.
                     if var_labels[s] == "<GAM[G(x; t)]>_x":
                         # In this case have the y-axis ticks appear on the left side of the plot using twin axis, with 
                         # colours_med[s % len(colours_med)] as the tick colour.
@@ -3545,6 +4013,7 @@ def analyse_PRELIMS_EQdata(indir, out_dir, prefixes=[], a_vals=[], TS_vals =[], 
                         #ax_right.set_ylim(0.6, 1.0); 
                     # Finally remove all y-axis ticks, labels for clarity (For Dual plots)
                     ax.yaxis.set_ticks_position('none'); ax.yaxis.set_ticklabels([]); ax.set_ylabel('');
+                    '''
                 elif serType == "TSERIES" and var_labels[s] in dict_var_labels.keys():
                     ax.set_title(r" $ P[$ " +f"{dict_var_labels[var_labels[s]]}" + r"$ ]$")
                     ax.set_ylabel(r"Avg Density, " +f"{dict_var_labels[var_labels[s]]}" + r"$\quad (kg\:km^{-2})$", fontsize=15)
@@ -3558,7 +4027,7 @@ def analyse_PRELIMS_EQdata(indir, out_dir, prefixes=[], a_vals=[], TS_vals =[], 
                 ax.tick_params(axis='x', labelsize=14); #ax.tick_params(axis='y', labelsize=14)
                 ax.set_xticklabels(cat_var_plot_order, rotation=30, fontsize=14, ha='right')
 
-                # If cat_var_plot_order has > 10 entries, only display every second tick label and rotate by 45 degrees.
+                # If cat_var_plot_order has > 10 entries, rotate and display every tick label by 45 degrees.
                 if len(cat_var_plot_order) > 8:
                     ax.set_xticks(range(len(cat_var_plot_order)))
                     ax.set_xticklabels(cat_var_plot_order, rotation=45, fontsize=14, ha='right')
@@ -3574,7 +4043,7 @@ def analyse_PRELIMS_EQdata(indir, out_dir, prefixes=[], a_vals=[], TS_vals =[], 
             
             fig.suptitle(f"Eq Distribution of Species For {Pre}, dP = {dP}, Geq = {Geq} B/W {Twin_min} -- {Twin_max}")
             plt.tight_layout()
-            plt.savefig(savedir + f"ALT3_VIOLIN_{serType}_amin_{Avals_scaled_list[0]}_amax_{Avals_scaled_list[-1]}_Twin_{Twin_min}_{Twin_max}_dP_{dP}_Geq_{Geq}.png", dpi =600, transparent=True)
+            plt.savefig(savedir + f"ALT2_VIOLIN_{serType}_amin_{Avals_scaled_list[0]}_amax_{Avals_scaled_list[-1]}_Twin_{Twin_min}_{Twin_max}_dP_{dP}_Geq_{Geq}.png", dpi =600, transparent=True)
             plt.show(); plt.close()
 
     # End of Pre loop
@@ -3881,214 +4350,244 @@ def recursive_copydir(src, dst, include_filetypes = ["*.txt"],
     print("\n\n__________________________________________________________________________________________\n\n")
 
 
-# ============================= PRELIM DATA ANALYSIS FUNCTIONS =============================
+if __name__ == "__main__":
+    # ============================= PRELIM DATA ANALYSIS FUNCTIONS =============================#
+    
+    recursive_copydir(in_dir, out_dir, include_filetypes = ["*.txt"], exclude_filetypes =["*.png", "*.jpg", "*.jpeg", "*.mp4"], symlinks=False)
+    a_vals = [0.026, 0.042, 0.05, 0.052]#[1.68, 1.686, 1.688, 1.69, 1.692, 1.694, 1.696, 1.698]
+    if cli_args.a_vals is not None: a_vals = cli_args.a_vals
+    #[0.02, 0.022, 0.023, 0.0235, 0.024, 0.0245, 0.025, 0.0255, 0.026, 0.028, 0.03, 0.034, 0.036, 0.038, 0.0415, 0.042, 0.044, 0.046, 0.05, 0.051, 0.052, 0.053, 0.054, 0.055, 0.06, 0.065, 0.07]
+    # #1.7, 1.72, 1.7225, 1.725, 1.7275, 1.73, 1.7325, 1.735, 1.74, 1.76, 1.78, 1.8] #1.75, 1.8, 20] #0.026, 0.034, 0.0415, 0.042, 0.05, 0.052] #, 0.057 , 0.06] #0.051, 0.053, 0.055]; 
+    #0.022, 0.023, 0.0235, 0.024, 0.245, 0.25, 0.255, 0.028, 0.038, 0.044, 0.046, 0.051, 0.053, 0.054, 0.055 ]  
+    #1.7, 1.78, 1.8, 1.84, 1.9, 2, 5, 20 ; 
+    #1.66, 1.67, 1.68, 1.686, 1.688, 1.69, 1.692, 1.694, 1.696, 1.698, 1.7, 1.72, 1.74, 1.76, 1.78, 1.8 ;
+    a_scaling = 1 #0.001
+    if cli_args.a_scaling is not None: a_scaling = cli_args.a_scaling
+    T_vals=[0, 80000, 84000, 88000, 92000, 96000, 100000, 104000, 108000, 112000, 116000, 120000, 120226, 131826, 144544, 158489, 173780, 190546]
+    if cli_args.T_vals is not None: T_vals = cli_args.T_vals
+    #T_vals= [0, 76000, 80000, 82000, 84000, 86000, 88000, 90000, 91201.1]#0, 80000, 84000,  88000, 92000, 96000, 98000, 100000, 104000, 108000, 112000, 116000, 120000, 120226] # [0, 80000.1, 82000.1, 84000.1, 86000.1, 88000.1, 90000.1, 92000.1, 94000.1, 96000.1, 100000.1]
+    #80000, 82000.1, 84000, 86000, 88000, 90000, 92000, 94000, 96000, 100000, 120226, 144544]#[0, 75857.7, 83176.3, 91201, 100000, 109648, 120226, 131826]
+    #T_vals= [0, 63.03, 109.56, 144.54, 190.52, 251.13, 331.1, 436.48, 575.41, 758.56, 831.71, 999.9, 1202.19, 1445.4, 1737.78, 2089.23, 2511.85, 3019.94, 3630.77, 4365.13, 5247.99, 6309.49, 6918.23, 7585.71, 8317.54, 9120.1, 9999.99]
+    #T_vals=[0, 63095.7, 69182.9, 75857.7, 83176.3, 91201, 99999.9, 109647, 120226, 131826, 144544, 158489, 173780, 190546, 208930, 229087];
+    # TVALS WHEN DT= 0.1
+    #T_vals=[0, 63095.7, 69183, 75857.7, 83176.3, 91201, 100000, 109647, 120226, 131826, 144544, 158489, 173780, 190546];
+    # TVALS WHEN DT= 0.12
+    #T_vals=[ 0, 20.88, 30.12, 39.72, 50.04, 99.96, 150, 200.04, 249.96, 300, 350.04, 399.96, 500.04, 600, 699.96, 800.04, 900, 999.96, 1100.04, 1200, 1318.2, 1445.4, 1737.72, 2089.2, 2511.84, 3019.92, 3630.72, 4365.12, 5274.96, 6309.48, 6918.24, 7585.68, 9120.1, 9999.96, 10964.8, 12022.6, 13182.5, 14454.4 ];
+    # #0, 63095.6, 69183, 75857.6, 83176.3, 91201, 100000, 109647, 120226, 131826, 144544, 158489, 173780, 190546];
+    #[0, 20.88, 30.12, 39.72, 50.04 99.96, 150, 200.04, 249.96, 300, 350.04, 399.96, 500.04, 600, 699.96, 800.04, 900, 999.96, 1100.04, 1200, 1318.2, 1445.4, 1737.72, 2089.2, 2511.84, 3019.92, 3630.72, 4365.12, 5274.96, 6309.48, 6918.24, 7585.68, 9120.1, 9999.96, 10964.8, 12022.6, 13182.5, 14454.4] 
+    #[0, 33, 47.85, 68.75, 99.55, 144.1, 208.45, 250.8, 301.95, 363, 436.15, 524.7, 600.05, 649.99, 700.04, 749.98, 800.03, 849.97, 900.02, 949.96, 1000.01, 1049.95, 1100, 1150.05, 1199.99, 1250.04, 1299.98, 1350.03, 1399.97, 1450.02, 1499.96, 1584.55, 1737.45, 1905.2, 7585.6] 
+    #[0, 144.54, 190.52, 251.13, 331.1, 436.48, 575.41, 758.56, 831.71, 999.9, 1202.19, 1445.4, 1737.78, 2089.23, 2511.85, 3019.94, 3630.77, 4365.13, 5247.99, 6309.49, 6918.23, 7585.71, 9120.1, 9999.99, 10964.7, 91201, 63095.7, 69183.1, 75857.7, 91201,  99999.9, 10964.3, 120226, 131826, 144544, 158489]
+    # 3SP INIT [0, 575.3, 758.45, 911.9, 1096.15, 1317.8, 1584.55, 1905.2, 2290.75, 2753.85, 3311, 3980.7, 4786.1, 5754.1, 6309.05, 6917.9, 7585.6, 8317.1, 9120.1, 9999.55, 91201, 99999.9, 10964.3, 120226, 131826, 144544, 158489]
+    #T_vals= [ 109648, 120226, 131826, 144544, 158489, 173780, 190546, 208930]
+    #T_vals=[0, 63095.7, 69182.9, 75857.7, 83176.3, 91201, 99999.9, 109647, 120226, 131826, 144544, 158489, 173780, 190546, 208930]
+    #T_vals= [158489, 173780, 190546, 208930, 229087, 251189, 275423, 301995, 331131, 363078]
+    # TVALS FOR GAMMA CHECK:
+    #T_vals= [0, 82000.1, 84000, 86000, 88000, 90000, 92000, 94000, 96000, 98000, 100000, 144544, 158489, 173780, 190546]
+    #T_vals= [0, 76000, 80000, 82000.1, 84000, 86000, 88000, 90000, 92000, 94000, 96000, 98000, 100000, 144544, 190546]
+    #T_vals =[4000.04, 3980.02, 3960, 3900.05, 3799.95, 3699.96, 3499.98, 3399.99, 3200.01, 3000.03, 
+    #        2800.05, 2599.96, 2399.98, 2200, 2000.02, 1800.04, 1599.95, 1399.97, 1199.99, 1000.01,
+    #        800.03, 600.05, 499.95, 399.96, 340.01, 330, 319.99, 299.97, 230.01, 220, 209.99, 199.98, 120.01, 110, 99.99, 0]
+    #        #800.03, 600.05, 499.95, 399.96, 299.97, 220, 199.98, 110, 99.99, 0]
+
+    #../Data/DP/Reorganised_Frames/Stoc/3Sp/DPParam_20_100_DsB6HX/DsB6-HX2001-UA0A0-1UNI
+    #../Data/DP/Reorganised_Frames/Stoc/3Sp/DPParam_20_100_DSB6HX/DsB6-HX2001-UA0A0-1UNI
+    #prefixes = ["K-S0B6X1-UNITY", "K-S-1B6X1-UNITY" ]#, "HsX2001-UA0A0-5E2UNI"] 
+    #"DsB6L9-UA0A0-1UNI", "DiC-L9B6-UNITY", "DsB6-UA0A0-1UNI"
+    #"HsX2001-UA125A0-5E2UNI", "HsX2005-UA125A0-5E2UNI", "HsX2001-UA0A0-5E2UNI"]
+    #prefixes = ["DsC-HXL2010-UA125A0-5E2UNI", "DsCGm-HXL2010-UA125A0-5E2UNI", "DsCGm-HXR03015-UA125A0-5E2UNI",  "DsC-HXR03015-UA125A0-5E2UNI"]
+    #"DsC-HXR03015-UA125A0-5E2UNI", "DsC-HXR2010-UA125A0-5E2UNI", "DsC-HXL03015-UA125A0-5E2UNI", "DsC-HXL2010-UA125A0-5E2UNI", "DsC-HXC03015-UA125A0-5E2UNI", "DsC-HXC2010-UA125A0-5E2UNI", "DsCGm-HXR03015-UA125A0-5E2UNI", "DsCGm-HXL03015-UA125A0-5E2UNI", "DsCGm-HXL2010-UA125A0-5E2UNI", "HX03002-UA125A0-1UNI",  "HX03002-UA125A0-5E2UNI"]
+
+    #["DiC-STD-HOMDO7", "DiC-STD-HOMDO5", "DiC-STD-DO7", "DiC-STD-DO5"]
+    #"HsX2001-UA125A0-5E2UNI", "HsX2005-UA125A0-5E2UNI", "HsX2001-UA125A125-5E2UNI", "HsX2005-UA125A125-5E2UNI"] 
+    #"HX03002-UA125A125-1UNI",  "HX03002-UA125A125-5E2UNI", "DsCX-TST-HX03002-UA125A125-5E2UNI" ]
+    #"DisC-UA125A125-1UNI", "DsC-UA125A125-1UNI", "DsCX-TST-HX2001-UA125A125-5E2UNI" ]
+    #"DsC-UA0A0-S1DTUNI", "DsCX-TST-UA0A0-S1DTUNI",  "DsC-UA125A0-S1DTUNI", "DsC-UA125A0-S1DT5E2UNI", "DsCX-TST-UA125A0-S1DTUNI", "DsC-UA125A125-S1DTUNI", "DsC-UA125A125-S1DT5E2UNI", "DsCX-TST-UA125A125-S1DTUNI" ]
+    #"B6-UA0A0-1UNI", "B6-UA125A0-1UNI", "B6-UA125A125-1UNI"]
+    #"DPB6-HX2001-UA0A0-1UNI", "DPB6-UA0A0-REGPRG-1UNI",  "DPB6-HX2001-UA125A0-1UNI", "DPB6-UA125A0-REGPRG-1UNI", "DPB6-UA125A125-REGPRG-1UNI"]
+    #"B6-HX2001-UA0", "B6-HX2005-UA0", "B6-HX2001-UA125", "B6-HX2005-UA125"]
+    #"RTK-UA125-LOPRG-1UNI", "RTK-UA125-REGPRG-1UNI" ]
+    #"RTK-UA125A0-REGPRG-1UNI", "RTK-UA125A0-REGPRG-5E2UNI",  "RTK-UA125A0-LOPRG-1UNI", "RTK-UA125A0-LOPRG-5E2UNI"]
+    #"HX1001-UA125A0-5E2UNI", "HX1005-UA125A0-5E2UNI", "HX2001-UA125A0-5E2UNI", "HX2005-UA125A0-5E2UNI", "HX3001-UA125A0-5E2UNI"]           
+    #"DiC-UA125A0-1UNI", "DiC-UA125A0-5E2UNI"]
+    #"DiC-UA125A0-S1DTUNI", "DiC-UA125A0-S1DT5E2UNI"]   #"DiC-UA125A0-1UNI", "DiC-UA125A0-5E2UNI"]#"DiC-UA125A2-1UNI", "DiC-UA125A2-5E2UNI"]   #"DiC-UA125A0-1UNI", "DiC-UA125A0-5E2UNI"]    #"DiC-G0A1A0-1LI"]  
+    #"DiC-B6-UNITY"] #"DiC-B6-UNTY" 
+    #"DiC-B6-MFTEQ"]#"DiC-STD"]#,"DiC-S7LI", "DiC-0.1LI"]
+    #prefixes = ["DiC-STDL8-HOMDO4", "DiC-STDL8-HOMDO4S2", "DiC-STDL8-HOMDO425S2", "DiC-STDL8-DO4S2", "DiC-STDL8-DO425S2"]
+    #prefixes = ["cuFKD-GAU-SLV1V1", "cuFKD-GAU-SLV2V1", "cuFKD-GAU-SLV5V4", "cuFKV-GAU-SLV1V1", "cuFKV-GAU-SLV2V1", "cuFKV-GAU-SLV5V4"]
+    #prefixes = ["HsX2001-UA0A0-5E2UNI", "HsX2001-UA125A0-5E2UNI", "HsX2005-UA0A0-5E2UNI", "HsX2005-UA125A0-5E2UNI"]
+    #"HsX2001-UA0A0-5E2UNI", "HsX2001-UA125A0-5E2UNI", "HsX2005-UA0A0-5E2UNI", "HsX2005-UA125A0-5E2UNI"]#, "HsX2001-UA125A125-5E2UNI"] #] "HsX2001-UA0A0-5E2UNI", "HsX2001-UA125A0-5E2UNI", "HsX2005-UA125A0-5E2UNI", "HsX2005-UA0A0-5E2UNI"
+    prefixes = ["HsX1005-FGPER05-UA125A125-5E2UNI", "HsX1005-FGPER1-UA125A125-5E2UNI", "HsX1005-FGPER2-UA125A125-5E2UNI"]
+    if cli_args.prefixes is not None: prefixes = cli_args.prefixes
+    #["HsX2001-FGPER05-UA125A0-5E2UNI", "HsX2001-FGPER1-UA125A0-5E2UNI", "HsX2001-FGPER2-UA125A0-5E2UNI", "HsX2001-FGAM0-UA125A0-5E2UNI", "HsX2001-FGAM1-UA125A0-5E2UNI"]
+    #prefixes = [ "CORR-DsB6-UA0A0-1UNI"] #"CORR-DsB6-UA0A0-1UNI"] #, "CORR-HsX2001-UA125A0"]#, "CORR-HsX2001-UA125A125", "CORR-HsX2005-UA125A125"]
+    # PREFIXES FOR SMALL BODY SIZE METAPOPLN
+
+    #LOCUSTS
+    #prefixes = ["DsCW10-HXR2010-UA0A0", "DsCW10-HXR2010-UA125A0", "DsC-HXR2010-UA0A0",  "DsC-HXR2010-UA125A0",
+    #            "DsCW10-HXR03015-UA0A0", "DsCW10-HXR03015-UA125A0", "DsC-HXR03015-UA0A0",  "DsC-HXR03015-UA125A0" ]
+    #prefixes = ["DsCW10-HXR2010-UA125", "DsCW10-HXR03015-UA125", "DsC-HXR2010-UA125"]
+    #prefixes = ["DsCW10-HXR2010-UA0A0-DT1", "DsCW10-HXR2010-UA125A0-DT1", "DsCW5-HXR2010-UA0A0-DT1", "DsCW5-HXR2010-UA125A0-DT1",
+    #            "DsC-HXR2010-UA0A0-DT1", "DsC-HXR2010-UA125A0-DT1" ]
+    #["DsCW10-HXR2010-UA125A125", "DsC-HXR2010-UA125A125"]#  "DsCW10-HXR03015-UA125A125", "DsC-HXR03015-UA125A125"]
 
 
+    # GENERIC SMALL MAMMAL
+    #prefixes = ["DsC-HXR03015-UA0-1UNI", "DsC-HXR2010-UA0-1UNI"] #"DsC-HXR03015-UA0-1UNI",
+    #prefixes = ["DsC-HXR03015-UA0A0-1UNI", "DsC-HXR2010-UA0A0-1UNI", "DsC-HXR03015-UA125A0-1UNI", "DsC-HXR2010-UA125A0-1UNI"] #"DsC-HXR03015-UA0-1UNI",
 
-#
-recursive_copydir(in_dir, out_dir, include_filetypes = ["*.txt"], exclude_filetypes =["*.png", "*.jpg", "*.jpeg", "*.mp4"], symlinks=False)
-a_vals = [1.7, 1.72, 1.7225, 1.725, 1.7275, 1.73, 1.735, 1.74, 1.76, 1.78, 1.8]
-#[0.02, 0.022, 0.023, 0.0235, 0.024, 0.0245, 0.025, 0.0255, 0.026, 0.028, 0.03, 0.034, 0.036, 0.038, 0.0415, 0.042, 0.044, 0.046, 0.05, 0.051, 0.052, 0.053, 0.054, 0.055, 0.06, 0.065, 0.07]
-# #1.7, 1.72, 1.7225, 1.725, 1.7275, 1.73, 1.7325, 1.735, 1.74, 1.76, 1.78, 1.8] #1.75, 1.8, 20] #0.026, 0.034, 0.0415, 0.042, 0.05, 0.052] #, 0.057 , 0.06] #0.051, 0.053, 0.055]; 
-#0.022, 0.023, 0.0235, 0.024, 0.245, 0.25, 0.255, 0.028, 0.038, 0.044, 0.046, 0.051, 0.053, 0.054, 0.055 ]  
-#1.7, 1.78, 1.8, 1.84, 1.9, 2, 5, 20 ; 
-#1.66, 1.67, 1.68, 1.686, 1.688, 1.69, 1.692, 1.694, 1.696, 1.698, 1.7, 1.72, 1.74, 1.76, 1.78, 1.8 ;
-a_scaling = 0.001 #0.001
-T_vals=[120226]
-#T_vals= [0, 76000, 80000, 82000, 84000, 86000, 88000, 90000, 91201.1]#0, 80000, 84000,  88000, 92000, 96000, 98000, 100000, 104000, 108000, 112000, 116000, 120000, 120226] # [0, 80000.1, 82000.1, 84000.1, 86000.1, 88000.1, 90000.1, 92000.1, 94000.1, 96000.1, 100000.1]
-#80000, 82000.1, 84000, 86000, 88000, 90000, 92000, 94000, 96000, 100000, 120226, 144544]#[0, 75857.7, 83176.3, 91201, 100000, 109648, 120226, 131826]
-#T_vals= [0, 63.03, 109.56, 144.54, 190.52, 251.13, 331.1, 436.48, 575.41, 758.56, 831.71, 999.9, 1202.19, 1445.4, 1737.78, 2089.23, 2511.85, 3019.94, 3630.77, 4365.13, 5247.99, 6309.49, 6918.23, 7585.71, 8317.54, 9120.1, 9999.99]
-#T_vals=[0, 63095.7, 69182.9, 75857.7, 83176.3, 91201, 99999.9, 109647, 120226, 131826, 144544, 158489, 173780, 190546, 208930, 229087];
-# TVALS WHEN DT= 0.1
-#T_vals=[0, 63095.7, 69183, 75857.7, 83176.3, 91201, 100000, 109647, 120226, 131826, 144544, 158489, 173780, 190546];
-# TVALS WHEN DT= 0.12
-#T_vals=[ 0, 20.88, 30.12, 39.72, 50.04, 99.96, 150, 200.04, 249.96, 300, 350.04, 399.96, 500.04, 600, 699.96, 800.04, 900, 999.96, 1100.04, 1200, 1318.2, 1445.4, 1737.72, 2089.2, 2511.84, 3019.92, 3630.72, 4365.12, 5274.96, 6309.48, 6918.24, 7585.68, 9120.1, 9999.96, 10964.8, 12022.6, 13182.5, 14454.4 ];#0, 63095.6, 69183, 75857.6, 83176.3, 91201, 100000, 109647, 120226, 131826, 144544, 158489, 173780, 190546];
-#[0, 20.88, 30.12, 39.72, 50.04 99.96, 150, 200.04, 249.96, 300, 350.04, 399.96, 500.04, 600, 699.96, 800.04, 900, 999.96, 1100.04, 1200, 1318.2, 1445.4, 1737.72, 2089.2, 2511.84, 3019.92, 3630.72, 4365.12, 5274.96, 6309.48, 6918.24, 7585.68, 9120.1, 9999.96, 10964.8, 12022.6, 13182.5, 14454.4] 
-#[0, 33, 47.85, 68.75, 99.55, 144.1, 208.45, 250.8, 301.95, 363, 436.15, 524.7, 600.05, 649.99, 700.04, 749.98, 800.03, 849.97, 900.02, 949.96, 1000.01, 1049.95, 1100, 1150.05, 1199.99, 1250.04, 1299.98, 1350.03, 1399.97, 1450.02, 1499.96, 1584.55, 1737.45, 1905.2, 7585.6] 
-#[0, 144.54, 190.52, 251.13, 331.1, 436.48, 575.41, 758.56, 831.71, 999.9, 1202.19, 1445.4, 1737.78, 2089.23, 2511.85, 3019.94, 3630.77, 4365.13, 5247.99, 6309.49, 6918.23, 7585.71, 9120.1, 9999.99, 10964.7, 91201, 63095.7, 69183.1, 75857.7, 91201,  99999.9, 10964.3, 120226, 131826, 144544, 158489]
-# 3SP INIT [0, 575.3, 758.45, 911.9, 1096.15, 1317.8, 1584.55, 1905.2, 2290.75, 2753.85, 3311, 3980.7, 4786.1, 5754.1, 6309.05, 6917.9, 7585.6, 8317.1, 9120.1, 9999.55, 91201, 99999.9, 10964.3, 120226, 131826, 144544, 158489]
-#T_vals= [ 109648, 120226, 131826, 144544, 158489, 173780, 190546, 208930]
-#T_vals=[0, 63095.7, 69182.9, 75857.7, 83176.3, 91201, 99999.9, 109647, 120226, 131826, 144544, 158489, 173780, 190546, 208930]
-#T_vals= [158489, 173780, 190546, 208930, 229087, 251189, 275423, 301995, 331131, 363078]
-# TVALS FOR GAMMA CHECK:
-#T_vals= [0, 82000.1, 84000, 86000, 88000, 90000, 92000, 94000, 96000, 98000, 100000, 144544, 158489, 173780, 190546]
-#T_vals= [0, 76000, 80000, 82000.1, 84000, 86000, 88000, 90000, 92000, 94000, 96000, 98000, 100000, 144544, 190546]
-#T_vals =[4000.04, 3980.02, 3960, 3900.05, 3799.95, 3699.96, 3499.98, 3399.99, 3200.01, 3000.03, 
-#        2800.05, 2599.96, 2399.98, 2200, 2000.02, 1800.04, 1599.95, 1399.97, 1199.99, 1000.01,
-#        800.03, 600.05, 499.95, 399.96, 340.01, 330, 319.99, 299.97, 230.01, 220, 209.99, 199.98, 120.01, 110, 99.99, 0]
-#        #800.03, 600.05, 499.95, 399.96, 299.97, 220, 199.98, 110, 99.99, 0]
+    TS_vals = [120226]  #33113.1] 36307.7]#, 131826] 145750] #190546] #57544] #69183.1] # #[229087] #[208930] #91201]  #[190546]; #[109648];
+    if cli_args.TS_vals is not None: TS_vals = cli_args.TS_vals
+    #a_vals = []#0.034, 0.048, 0.054];
+    #T_vals = []#0, 91201, 190546, 208930, 229087]
+    TCorr_vals =[4000.04]
+    if cli_args.TCorr_vals is not None: TCorr_vals = cli_args.TCorr_vals
 
-#../Data/DP/Reorganised_Frames/Stoc/3Sp/DPParam_20_100_DsB6HX/DsB6-HX2001-UA0A0-1UNI
-#../Data/DP/Reorganised_Frames/Stoc/3Sp/DPParam_20_100_DSB6HX/DsB6-HX2001-UA0A0-1UNI
-#prefixes = ["K-S0B6X1-UNITY", "K-S-1B6X1-UNITY" ]#, "HsX2001-UA0A0-5E2UNI"] 
-#"DsB6L9-UA0A0-1UNI", "DiC-L9B6-UNITY", "DsB6-UA0A0-1UNI"
-#"HsX2001-UA125A0-5E2UNI", "HsX2005-UA125A0-5E2UNI", "HsX2001-UA0A0-5E2UNI"]
-#prefixes = ["DsC-HXL2010-UA125A0-5E2UNI", "DsCGm-HXL2010-UA125A0-5E2UNI", "DsCGm-HXR03015-UA125A0-5E2UNI",  "DsC-HXR03015-UA125A0-5E2UNI"]
-#"DsC-HXR03015-UA125A0-5E2UNI", "DsC-HXR2010-UA125A0-5E2UNI", "DsC-HXL03015-UA125A0-5E2UNI", "DsC-HXL2010-UA125A0-5E2UNI", "DsC-HXC03015-UA125A0-5E2UNI", "DsC-HXC2010-UA125A0-5E2UNI", "DsCGm-HXR03015-UA125A0-5E2UNI", "DsCGm-HXL03015-UA125A0-5E2UNI", "DsCGm-HXL2010-UA125A0-5E2UNI", "HX03002-UA125A0-1UNI",  "HX03002-UA125A0-5E2UNI"]
+    # col1 = "GAM[G(x; t)]"; col2 = "G(x; t)"; NCC_index_key = f"NCC-Index{{{col1};{col2}}}_{g}"
 
-#"HsX2001-UA125A0-5E2UNI", "HsX2005-UA125A0-5E2UNI", "HsX2001-UA125A125-5E2UNI", "HsX2005-UA125A125-5E2UNI"] 
-#"HX03002-UA125A125-1UNI",  "HX03002-UA125A125-5E2UNI", "DsCX-TST-HX03002-UA125A125-5E2UNI" ]
-#"DisC-UA125A125-1UNI", "DsC-UA125A125-1UNI", "DsCX-TST-HX2001-UA125A125-5E2UNI" ]
-#"DsC-UA0A0-S1DTUNI", "DsCX-TST-UA0A0-S1DTUNI",  "DsC-UA125A0-S1DTUNI", "DsC-UA125A0-S1DT5E2UNI", "DsCX-TST-UA125A0-S1DTUNI", "DsC-UA125A125-S1DTUNI", "DsC-UA125A125-S1DT5E2UNI", "DsCX-TST-UA125A125-S1DTUNI" ]
-#"B6-UA0A0-1UNI", "B6-UA125A0-1UNI", "B6-UA125A125-1UNI"]
-#"DPB6-HX2001-UA0A0-1UNI", "DPB6-UA0A0-REGPRG-1UNI",  "DPB6-HX2001-UA125A0-1UNI", "DPB6-UA125A0-REGPRG-1UNI", "DPB6-UA125A125-REGPRG-1UNI"]
-#"B6-HX2001-UA0", "B6-HX2005-UA0", "B6-HX2001-UA125", "B6-HX2005-UA125"]
-#"RTK-UA125-LOPRG-1UNI", "RTK-UA125-REGPRG-1UNI" ]
-#"RTK-UA125A0-REGPRG-1UNI", "RTK-UA125A0-REGPRG-5E2UNI",  "RTK-UA125A0-LOPRG-1UNI", "RTK-UA125A0-LOPRG-5E2UNI"]
-#"HX1001-UA125A0-5E2UNI", "HX1005-UA125A0-5E2UNI", "HX2001-UA125A0-5E2UNI", "HX2005-UA125A0-5E2UNI", "HX3001-UA125A0-5E2UNI"]           
-#"DiC-UA125A0-1UNI", "DiC-UA125A0-5E2UNI"]
-#"DiC-UA125A0-S1DTUNI", "DiC-UA125A0-S1DT5E2UNI"]   #"DiC-UA125A0-1UNI", "DiC-UA125A0-5E2UNI"]#"DiC-UA125A2-1UNI", "DiC-UA125A2-5E2UNI"]   #"DiC-UA125A0-1UNI", "DiC-UA125A0-5E2UNI"]    #"DiC-G0A1A0-1LI"]  
-#"DiC-B6-UNITY"] #"DiC-B6-UNTY" 
-#"DiC-B6-MFTEQ"]#"DiC-STD"]#,"DiC-S7LI", "DiC-0.1LI"]
-prefixes = ["DsB6L9-UA0A0-1UNI"]
-#prefixes = ["cuFKD-GAU-SLV1V1", "cuFKD-GAU-SLV2V1", "cuFKD-GAU-SLV5V4", "cuFKV-GAU-SLV1V1", "cuFKV-GAU-SLV2V1", "cuFKV-GAU-SLV5V4"]
-#prefixes = ["HsX2001-UA0A0-5E2UNI", "HsX2001-UA125A0-5E2UNI", "HsX2005-UA0A0-5E2UNI", "HsX2005-UA125A0-5E2UNI"]
-#"HsX2001-UA0A0-5E2UNI", "HsX2001-UA125A0-5E2UNI", "HsX2005-UA0A0-5E2UNI", "HsX2005-UA125A0-5E2UNI"]#, "HsX2001-UA125A125-5E2UNI"] #] "HsX2001-UA0A0-5E2UNI", "HsX2001-UA125A0-5E2UNI", "HsX2005-UA125A0-5E2UNI", "HsX2005-UA0A0-5E2UNI"
-#prefixes = [ "CORR-DsB6-UA0A0-1UNI"] #"CORR-DsB6-UA0A0-1UNI"] #, "CORR-HsX2001-UA125A0"]#, "CORR-HsX2001-UA125A125", "CORR-HsX2005-UA125A125"]
-# PREFIXES FOR SMALL BODY SIZE METAPOPLN
+    print("Note the following set values:")
+    print(f"Prefixes: {prefixes}")
+    print(f"TS_vals: {TS_vals}")
+    print(f"T_vals: {T_vals}")
+    print(f"a_vals: {a_vals}")
+    print(f"SPB: {SPB}, g: {g}, dP: {dP}, Geq: {Geq}, maxR: {R_max}")
+    print(f"in_dir: {in_dir} \nout_dir: {out_dir}")
+    #print(f"NCC_index_key: {NCC_index_key}")
+    input("Press F to pay respects...")
+    print("\n\n__________________________________________________________________________________________\n\n")
 
-#LOCUSTS
-#prefixes = ["DsCW10-HXR2010-UA0A0", "DsCW10-HXR2010-UA125A0", "DsC-HXR2010-UA0A0",  "DsC-HXR2010-UA125A0",
-#            "DsCW10-HXR03015-UA0A0", "DsCW10-HXR03015-UA125A0", "DsC-HXR03015-UA0A0",  "DsC-HXR03015-UA125A0" ]
-#prefixes = ["DsCW10-HXR2010-UA125", "DsCW10-HXR03015-UA125", "DsC-HXR2010-UA125"]
-#prefixes = ["DsCW10-HXR2010-UA0A0-DT1", "DsCW10-HXR2010-UA125A0-DT1", "DsCW5-HXR2010-UA0A0-DT1", "DsCW5-HXR2010-UA125A0-DT1",
-#            "DsC-HXR2010-UA0A0-DT1", "DsC-HXR2010-UA125A0-DT1" ]
-#["DsCW10-HXR2010-UA125A125", "DsC-HXR2010-UA125A125"]#  "DsCW10-HXR03015-UA125A125", "DsC-HXR03015-UA125A125"]
-
-
-# GENERIC SMALL MAMMAL
-#prefixes = ["DsC-HXR03015-UA0-1UNI", "DsC-HXR2010-UA0-1UNI"] #"DsC-HXR03015-UA0-1UNI",
-#prefixes = ["DsC-HXR03015-UA0A0-1UNI", "DsC-HXR2010-UA0A0-1UNI", "DsC-HXR03015-UA125A0-1UNI", "DsC-HXR2010-UA125A0-1UNI"] #"DsC-HXR03015-UA0-1UNI",
-
-TS_vals = [120226]  #33113.1] 36307.7]#, 131826] 145750] #190546] #57544] #69183.1] # #[229087] #[208930] #91201]  #[190546]; #[109648];
-#a_vals = []#0.034, 0.048, 0.054]; 
-#T_vals = []#0, 91201, 190546, 208930, 229087]
-TCorr_vals =[4000.04]
-
-# col1 = "GAM[G(x; t)]"; col2 = "G(x; t)"; NCC_index_key = f"NCC-Index{{{col1};{col2}}}_{g}"
-
-print("Note the following set values:")
-print(f"Prefixes: {prefixes}")
-print(f"TS_vals: {TS_vals}")
-print(f"T_vals: {T_vals}")
-print(f"a_vals: {a_vals}")
-print(f"SPB: {SPB}, g: {g}, dP: {dP}, Geq: {Geq}, maxR: {R_max}")
-print(f"in_dir: {in_dir} \nout_dir: {out_dir}")
-#print(f"NCC_index_key: {NCC_index_key}")
-input("Press F to pay respects...")
-print("\n\n__________________________________________________________________________________________\n\n")
-
-''' FOR VIDEOS OF ALL REPLICATES
-for Pre in prefixes:
-    frame_visualiser(in_dir, out_dir, Pre, a_vals, T_vals, maxR= -1, plt_gamma= False, delpng = False)
-    print(f"Done with making frames for {Pre}")
-    for a in a_vals:
-        print(f"Making video for {Pre} at a = {a} \n\n")
-        home_video(out_dir, out_dir, [Pre], [a], T_vals, maxR= -1, 
-                   pngformat= "CombinedImg/BioConc_a_{a}_T_{T}_n_{R}.png", pngdir= "{Pre}/L_{g}_a_{a}/dP_{dP}/Geq_{Geq}/T_{T}/",
-                     maxR_txtdir = "{Pre}/L_{g}_a_{a}/dP_{dP}/Geq_{Geq}/T_{T}/maxR.txt", videoname = "guess",
-                     video_relpath= "{Pre}/Videos/Conc/{a}/{Tmin}-{Tmax}/")
-#'''
-
-''' FOR VIDEOS OF INDIVIDUAL REPLICATES
-for Pre in prefixes:
-    for R in range(0, 3):
-        frame_visualiser(in_dir, out_dir, Pre, a_vals, T_vals, maxR= R+1, minR= R, plt_gamma= True, delpng = False)
+    ''' FOR VIDEOS OF ALL REPLICATES
+    for Pre in prefixes:
+        frame_visualiser(in_dir, out_dir, Pre, a_vals, T_vals, maxR= -1, plt_gamma= False, delpng = False)
         print(f"Done with making frames for {Pre}")
         for a in a_vals:
             print(f"Making video for {Pre} at a = {a} \n\n")
-            home_video(out_dir, out_dir, [Pre], [a], T_vals= T_vals, maxR= R+1, minR= R,
-                    pngformat= "CombinedImg/BioGammaConc_a_{a}_T_{T}_n_{R}.png", pngdir= "{Pre}/L_{g}_a_{a}/dP_{dP}/Geq_{Geq}/T_{T}/",
-                        maxR_txtdir = "{Pre}/L_{g}_a_{a}/dP_{dP}/Geq_{Geq}/T_{T}/maxR.txt", videoname = "guess",
-                        video_relpath= "{Pre}/Videos/Conc/{a}/{Tmin}-{Tmax}/")
-#'''
+            home_video(out_dir, out_dir, [Pre], [a], T_vals, maxR= -1, 
+                       pngformat= "CombinedImg/BioConc_a_{a}_T_{T}_n_{R}.png", pngdir= "{Pre}/L_{g}_a_{a}/dP_{dP}/Geq_{Geq}/T_{T}/",
+                         maxR_txtdir = "{Pre}/L_{g}_a_{a}/dP_{dP}/Geq_{Geq}/T_{T}/maxR.txt", videoname = "guess",
+                         video_relpath= "{Pre}/Videos/Conc/{a}/{Tmin}-{Tmax}/")
+    #'''
 
-''' FOR VIDEOS OF ALL REPLICATES ACROSS A AND FOR GIVEN T
-for Pre in prefixes:
-    frame_visualiser(in_dir, out_dir, Pre, a_vals, T_vals, maxR= -1, plt_gamma= False, delpng = False)
-    print(f"Done with making frames for {Pre}")
-    #for a in a_vals:
-    #print(f"Making video for {Pre} at a = {a} \n\n")
-    home_video(out_dir, out_dir, [Pre], a_vals, T_vals, maxR= -1, 
-            pngformat= "CombinedImg/BioConc_a_{a}_T_{T}_n_{R}.png", pngdir= "{Pre}/L_{g}_a_{a}/dP_{dP}/Geq_{Geq}/T_{T}/",
-            maxR_txtdir = "{Pre}/L_{g}_a_{a}/dP_{dP}/Geq_{Geq}/T_{T}/maxR.txt", videoname = "guess",
-            video_relpath= "{Pre}/Videos/Conc/{amin}-{amax}/{Tmin}-{Tmax}/")
-#'''
+    #''' FOR VIDEOS OF INDIVIDUAL REPLICATES
+    for Pre in prefixes:
+        for R in range(0, 2):
+            frame_visualiser(in_dir, out_dir, Pre, a_vals, T_vals, maxR= R+1, minR= R, plt_gamma= False, delpng = False)
+            print(f"Done with making frames for {Pre}")
+            for a in a_vals:
+                print(f"Making video for {Pre} at a = {a} \n\n")
+                home_video(out_dir, out_dir, [Pre], [a], T_vals= T_vals, maxR= R+1, minR= R,
+                        pngformat= "CombinedImg/BioConc_a_{a}_T_{T}_n_{R}.png", pngdir= "{Pre}/L_{g}_a_{a}/dP_{dP}/Geq_{Geq}/T_{T}/",
+                            maxR_txtdir = "{Pre}/L_{g}_a_{a}/dP_{dP}/Geq_{Geq}/T_{T}/maxR.txt", videoname = "guess",
+                            video_relpath= "{Pre}/Videos/Conc/{a}/{Tmin}-{Tmax}/")
+    #'''
 
-''' FOR SPREADING TESTS, WITH PREFIX = NREF-GAU/ REF-GAU
-for Pre in prefixes:
-    for R in range(0, 1):
-        frame_visualiser(in_dir, out_dir, Pre, a_vals, T_vals, maxR= R+1, minR= R, plt_gamma= True, delpng = False)
-        #frame_visualiser(in_dir, out_dir, Pre, a_vals, T_vals, maxR= -1, plt_gamma= True, delpng = False)
-    print(f"Done with making frames for {Pre}")
+    ''' FOR VIDEOS OF ALL REPLICATES ACROSS A AND FOR GIVEN T
+    for Pre in prefixes:
+        frame_visualiser(in_dir, out_dir, Pre, a_vals, T_vals, maxR= -1, plt_gamma= False, delpng = False)
+        print(f"Done with making frames for {Pre}")
+        #for a in a_vals:
+        #print(f"Making video for {Pre} at a = {a} \n\n")
+        home_video(out_dir, out_dir, [Pre], a_vals, T_vals, maxR= -1, 
+                pngformat= "CombinedImg/BioConc_a_{a}_T_{T}_n_{R}.png", pngdir= "{Pre}/L_{g}_a_{a}/dP_{dP}/Geq_{Geq}/T_{T}/",
+                maxR_txtdir = "{Pre}/L_{g}_a_{a}/dP_{dP}/Geq_{Geq}/T_{T}/maxR.txt", videoname = "guess",
+                video_relpath= "{Pre}/Videos/Conc/{amin}-{amax}/{Tmin}-{Tmax}/")
+    #'''
+
+    ''' FOR SPREADING TESTS, WITH PREFIX = NREF-GAU/ REF-GAU
+    for Pre in prefixes:
+        for R in range(0, 1):
+            frame_visualiser(in_dir, out_dir, Pre, a_vals, T_vals, maxR= R+1, minR= R, plt_gamma= True, delpng = False)
+            #frame_visualiser(in_dir, out_dir, Pre, a_vals, T_vals, maxR= -1, plt_gamma= True, delpng = False)
+        print(f"Done with making frames for {Pre}")
+        for a in a_vals:
+            print(f"Making video for {Pre} at a = {a} \n\n")
+            home_video(out_dir, out_dir, [Pre], [a], T_vals= T_vals, maxR= R+1, minR= R, 
+                       pngformat= "CombinedImg/BioGammaConc_a_{a}_T_{T}_n_{R}.png", pngdir= "{Pre}/L_{g}_a_{a}/dP_{dP}/Geq_{Geq}/T_{T}/",
+                         maxR_txtdir = "{Pre}/L_{g}_a_{a}/dP_{dP}/Geq_{Geq}/T_{T}/maxR.txt", videoname = "guess",
+                         video_relpath= "{Pre}/Videos/Conc/{a}/{Tmin}-{Tmax}/")
+    #'''
+    #frame_visualiser(in_dir, out_dir, prefixes[0], a_vals, T_vals, maxR= -1, plt_gamma= False, delpng = False)
+    #home_video(out_dir, out_dir, prefixes, a_vals, T_vals, R_max, pngformat= "CombinedImg/BioConc_a_{a}_T_{T}_n_{R}.png", videoname = "guess")
+
+    #prefixes = ["DIC-NREF-1.1HI", "DIC-NREF-0.5LI", "DIC-NREF-0.1LI"]
+    #analyse_FRAME_EQdata(in_dir, out_dir, prefixes, a_vals, T_vals, Tavg_window_index = [150000, 240000], filename = "MEAN_STD_Surviving_Runs.txt")
+    #analyse_timeseriesData(in_dir, out_dir, prefixes, a_vals, T_vals, filename = "MEAN_REPLICATES.txt")
+    if SPB == 3:
+        variable_labels = [ "<<P(x; t)>_x>_r" , "<<G(x; t)>_x>_r", "<<Pr(x; t)>_x>_r"]
+        var_frame_labels = ["P(x; t)", "G(x; t)", "Pr(x; t)"] #
+        move_var_labels = [ "<GAM[G(x; t)]>_x" , "<GAM[Pr(x; t)]>_x"]
+        Tavg_win_index = [190000, 200000]; Traj_win_index =[100, 3000]; Tavg_win_index_move= [190000, 200000];#[80000, 150000]; #[100000, 240000]
+        # Window for averaging over last Tavg_win_index values of T (if negative, then average over last |Tavg_win_index| values of T)
+        # If Tavg_win_index[0] < 0 and Tavg_win_index[1] <= 0, then average over last Tavg_win_index[0] + Tmax to Tavg_win_index[1] + Tmax values of T.
+        # If Tavg_win_index[1] >= Tavg_win_index[0] >= 0, then average over last Tavg_win_index[0] to Tavg_win_index[1] values of T.
+
+    elif SPB == 2:
+        variable_labels = [ "<<P(x; t)>_x>_r" , "<<G(x; t)>_x>_r"]; 
+        var_frame_labels = ["P(x; t)" , "G(x; t)"]
+        move_var_labels = [ "<GAM[G(x; t)]>_x"]
+        Tavg_win_index = [160000, 200000]; Traj_win_index =[1000, 10000]; Tavg_win_index_move= [80000, 150000];#[150000, 240000] #[50000, 100000] #
+    elif SPB == 1:
+        variable_labels = ["<<P(x; t)>_x>_r"]; var_frame_labels = ["P(x; t)"];  Tavg_win_index = [180000, 200000]; Traj_win_index =[200, 5000]; #[65000, 100000]
+        move_var_labels = [ "<GAM[G(x; t)]>_x"]; Tavg_win_index_move= [120000, 125000];
+
+    ''' For timeseries data analysis of Prelims files
+    prelim_fits ={"<<P(x; t)>_x>_r": {"fitFunc": decay_power_lawfit, "exp": 0.451, "A0": None, "xmin": 80000, "xmax": 120000},
+                   "<<G(x; t)>_x>_r": {"fitFunc": power_lawfit, "exp": None, "A0": None, "xmin": 2000, "xmax": 20000},
+                    "<<Pr(x; t)>_x>_r": {"fitFunc": power_lawfit, "exp": None, "A0": None, "xmin": 4000, "xmax": 30000} }
+    analyse_PRELIMS_TIMESERIESdata(in_dir, out_dir, prefixes, a_vals, TS_vals, serType = "TSERIES", meanfilename = "MEAN_TSERIES_T_{TS}.csv", 
+                                   a_c=[1.72, 1.725, 1.7275, 1.73, 1.74, 1.76, 1.78, 1.8], prelim_fit=prelim_fits, 
+                                   var_labels= variable_labels, a_scaling= a_scaling)
+    #'''
+    #analyse_PRELIMS_TIMESERIESdata(in_dir, out_dir, prefixes, a_vals, TS_vals, serType = "TSERIES", meanfilename = "MEAN_TSERIES_T_{TS}.csv", a_c=None, var_labels= variable_labels, a_scaling= a_scaling)                               
+    #analyse_PRELIMS_EQdata(in_dir, out_dir, prefixes, a_vals, TS_vals, Tavg_window_index = Tavg_win_index, meanfilename = "MEAN_TSERIES_T_{TS}.csv", var_labels= variable_labels, a_scaling= a_scaling)
+    #analyse_PRELIMS_EQdata(in_dir, out_dir, prefixes, a_vals, TS_vals, Tavg_window_index = Tavg_win_index, serType = "TSERIES", meanfilename = "MEAN_TSERIES_T_{TS}.csv", var_labels= variable_labels, plt_violin= True, a_scaling= a_scaling)
+    '''
     for a in a_vals:
-        print(f"Making video for {Pre} at a = {a} \n\n")
-        home_video(out_dir, out_dir, [Pre], [a], T_vals= T_vals, maxR= R+1, minR= R, 
-                   pngformat= "CombinedImg/BioGammaConc_a_{a}_T_{T}_n_{R}.png", pngdir= "{Pre}/L_{g}_a_{a}/dP_{dP}/Geq_{Geq}/T_{T}/",
-                     maxR_txtdir = "{Pre}/L_{g}_a_{a}/dP_{dP}/Geq_{Geq}/T_{T}/maxR.txt", videoname = "guess",
-                     video_relpath= "{Pre}/Videos/Conc/{a}/{Tmin}-{Tmax}/")
-#'''
-#frame_visualiser(in_dir, out_dir, prefixes[0], a_vals, T_vals, maxR= -1, plt_gamma= False, delpng = False)
-#home_video(out_dir, out_dir, prefixes, a_vals, T_vals, R_max, pngformat= "CombinedImg/BioConc_a_{a}_T_{T}_n_{R}.png", videoname = "guess")
+        analyse_PRELIMS_TRAJECTORYdata(in_dir, out_dir, prefixes, [a], TS_vals, size_label = ["t"], maxR= 5, minR=0, T_window = Traj_win_index, meanfilename = "Mean_TSERIES_T_{TS}_dP_{dP}_Geq_{Geq}.csv", a_scaling= a_scaling, 
+            x_label= ["<<G(x; t)>_x>_r"], y_label= ["<<Pr(x; t)>_x>_r"], hue_label=["<<P(x; t)>_x>_r"])
+    #'''
 
-#prefixes = ["DIC-NREF-1.1HI", "DIC-NREF-0.5LI", "DIC-NREF-0.1LI"]
-#analyse_FRAME_EQdata(in_dir, out_dir, prefixes, a_vals, T_vals, Tavg_window_index = [150000, 240000], filename = "MEAN_STD_Surviving_Runs.txt")
-#analyse_timeseriesData(in_dir, out_dir, prefixes, a_vals, T_vals, filename = "MEAN_REPLICATES.txt")
-if SPB == 3:
-    variable_labels = [ "<<P(x; t)>_x>_r" , "<<G(x; t)>_x>_r", "<<Pr(x; t)>_x>_r"]
-    var_frame_labels = ["P(x; t)", "G(x; t)", "Pr(x; t)"]
-    move_var_labels = [ "<GAM[G(x; t)]>_x" , "<GAM[Pr(x; t)]>_x"]
-    Tavg_win_index = [190000, 200000]; Traj_win_index =[100, 3000]; Tavg_win_index_move= [190000, 200000];#[80000, 150000]; #[100000, 240000]
-    # Window for averaging over last Tavg_win_index values of T (if negative, then average over last |Tavg_win_index| values of T)
-    # If Tavg_win_index[0] < 0 and Tavg_win_index[1] <= 0, then average over last Tavg_win_index[0] + Tmax to Tavg_win_index[1] + Tmax values of T.
-    # If Tavg_win_index[1] >= Tavg_win_index[0] >= 0, then average over last Tavg_win_index[0] to Tavg_win_index[1] values of T.
-elif SPB == 2:
-    variable_labels = [ "<<P(x; t)>_x>_r" , "<<G(x; t)>_x>_r"]; 
-    var_frame_labels = ["P(x; t)" , "G(x; t)"]
-    move_var_labels = [ "<GAM[G(x; t)]>_x"]
-    Tavg_win_index = [160000, 200000]; Traj_win_index =[1000, 10000]; Tavg_win_index_move= [80000, 150000];#[150000, 240000] #[50000, 100000] #
-elif SPB == 1:
-    variable_labels = ["<<P(x; t)>_x>_r"]; var_frame_labels = ["P(x; t)"];  Tavg_win_index = [120000, 125000]; Traj_win_index =[200, 5000]; #[65000, 100000]
-    move_var_labels = [ "<GAM[G(x; t)]>_x"]; Tavg_win_index_move= [120000, 125000];
+    # For FRAME DATA
+    #analyse_FRAME_FFTPOWERdata(in_dir, out_dir, prefixes, a_vals, T_vals, filename = "FFT_POWERspectra.csv", Tavg_window_index = Tavg_win_index, show_fundamental_freq=True, var_labels= var_frame_labels, a_scaling= a_scaling)
+    #analyse_FRAME_POTdata(in_dir, out_dir, prefixes, a_vals, T_vals, find_minima= True, filename = "Pot_Well.csv", 
+    #                          minimafilename = "LOCAL_MINIMA.csv", var_labels= [ "P(x; t)" , "G(x; t)", "Pr(x; t)"], a_scaling= a_scaling)
+    #analyse_FRAME_CLUSTEREDISTdata(in_dir, out_dir, prefixes, a_vals, T_vals, filename = "CLUSTERED_FREQUENCIES.csv", clustsubdir ="CLUST/{binType}_{nbins}/",
+    #        binType="Zero", nbins=2,  var_labels= var_frame_labels, plot_binframes=False, CDF=True, a_c=[1.8], a_scaling= a_scaling)
 
-analyse_PRELIMS_TIMESERIESdata(in_dir, out_dir, prefixes, a_vals, TS_vals, serType = "TSERIES", meanfilename = "MEAN_TSERIES_T_{TS}.csv", a_c=[1.72, 1.725, 1.7275, 1.73], var_labels= variable_labels, a_scaling= a_scaling)
-#analyse_PRELIMS_EQdata(in_dir, out_dir, prefixes, a_vals, TS_vals, Tavg_window_index = Tavg_win_index, meanfilename = "MEAN_TSERIES_T_{TS}.csv", var_labels= variable_labels, a_scaling= a_scaling)
-#analyse_PRELIMS_EQdata(in_dir, out_dir, prefixes, a_vals, TS_vals, Tavg_window_index = Tavg_win_index, serType = "TSERIES", meanfilename = "MEAN_TSERIES_T_{TS}.csv", var_labels= variable_labels, plt_violin= True, a_scaling= a_scaling)
-'''
-for a in a_vals:
-    analyse_PRELIMS_TRAJECTORYdata(in_dir, out_dir, prefixes, [a], TS_vals, size_label = ["t"], maxR= 5, minR=0, T_window = Traj_win_index, meanfilename = "Mean_TSERIES_T_{TS}_dP_{dP}_Geq_{Geq}.csv", a_scaling= a_scaling, 
-        x_label= ["<<G(x; t)>_x>_r"], y_label= ["<<Pr(x; t)>_x>_r"], hue_label=["<<P(x; t)>_x>_r"])
-#'''
+    # For FRAME--BASED Timeseries of CLUSTERED DATA.
+    statType = ["MEAN_CLUSTER_SIZE", "NUM_CLUSTERS", "CLUS_DENSITY", "OCCUPIED_SITE_FRAC", "MEAN_SQ_DIST_LCENTER", "MEAN_SQ_DIST_UCOM"]
+    #["CLUS_DENSITY", "OCCUPIED_SITE_FRAC", "MEAN_SQ_DIST_LCENTER", "MEAN_SQ_DIST_UCOM"] ["MEAN_CLUSTER_SIZE", "NUM_CLUSTERS"]
+    cluststat_filename = "MACRO_FRAMESTATS.csv" # "MACRO_CLUSTERSTATS.csv"
+    prelim_fits ={"P(x; t)": {"fitFunc": decay_power_lawfit, "exp": 0.451, "A0": None, "xmin": 80000, "xmax": 120000},
+                   "G(x; t)": {"fitFunc": decay_power_lawfit, "exp": None, "A0": None, "xmin": 2000, "xmax": 20000},
+                    "Pr(x; t)": {"fitFunc": decay_power_lawfit, "exp": None, "A0": None, "xmin": 5000, "xmax": 100000} }
+    #for stat in statType:
+    #    analyse_FRAME_CLUSTERSTATS_timeseriesData(in_dir, out_dir, prefixes, a_vals, T_vals, statType= stat, binType="GMM", nbins=2, 
+    #        filename = cluststat_filename, cluststatsubdir ="CLUST/{binType}_{nbins}/", a_c="all", #a_c=[1.72, 1.725, 1.7275, 1.73, 1.74, 1.76, 1.78, 1.8],
+    #        prelim_fit=prelim_fits, var_labels= "deduce", a_scaling= a_scaling)
 
-# For FRAME DATA
-#analyse_FRAME_FFTPOWERdata(in_dir, out_dir, prefixes, a_vals, T_vals, filename = "FFT_POWERspectra.csv", Tavg_window_index = Tavg_win_index, show_fundamental_freq=True, var_labels= var_frame_labels, a_scaling= a_scaling)
-#analyse_FRAME_POTdata(in_dir, out_dir, prefixes, a_vals, T_vals, find_minima= True, filename = "Pot_Well.csv", 
-#                          minimafilename = "LOCAL_MINIMA.csv", var_labels= [ "P(x; t)" , "G(x; t)", "Pr(x; t)"], a_scaling= a_scaling)
-#analyse_FRAME_CLUSTEREDISTdata(in_dir, out_dir, prefixes, a_vals, T_vals, filename = "CLUSTERED_FREQUENCIES.csv", clustsubdir ="CLUST/{binType}_{nbins}/",
-#        binType="GMM", nbins=2,  var_labels= var_frame_labels, plot_binframes=False, CDF=True, a_c=[1.725], a_scaling= a_scaling)
 
-# For MOVEMENT DATA
-#analyse_PRELIMS_TIMESERIESdata(in_dir, out_dir, prefixes, a_vals, TS_vals, serType = "MOVSERIES", meanfilename = "MEAN_{serType}_T_{TS}.csv", var_labels= move_var_labels, a_scaling= a_scaling)
-#analyse_PRELIMS_EQdata(in_dir, out_dir, prefixes, a_vals, TS_vals, Tavg_window_index = Tavg_win_index_move, serType = "MOVSERIES",  
-#                       meanfilename = "MEAN_{serType}_T_{TS}.csv", var_labels= move_var_labels, plt_violin= True, a_scaling= a_scaling)
+    # For MOVEMENT DATA
+    #analyse_PRELIMS_TIMESERIESdata(in_dir, out_dir, prefixes, a_vals, TS_vals, serType = "MOVSERIES", meanfilename = "MEAN_{serType}_T_{TS}.csv", var_labels= move_var_labels, a_scaling= a_scaling)
+    #analyse_PRELIMS_EQdata(in_dir, out_dir, prefixes, a_vals, TS_vals, Tavg_window_index = Tavg_win_index_move, serType = "MOVSERIES",  
+    #                       meanfilename = "MEAN_{serType}_T_{TS}.csv", var_labels= move_var_labels, plt_violin= True, a_scaling= a_scaling)
 
-#analyse_FRAME_POTdata(in_dir, out_dir, prefixes, a_vals, T_vals, find_minima= True, filename = "Gamma_Pot_Well.csv", 
-#                          minimafilename = "Gamma_LOCAL_MINIMA.csv", var_labels= [ "GAM[G(x; t)]" , "GAM[Pr(x; t)]"])
-''' # For MEAN and Timeseries of CORR DATA.
-analType= ["NCC", "ZNCC", "AMI", "MI", "BVMoransI"]
-for anal in analType:
-    analyse_FRAME_CORRdata(in_dir, out_dir, prefixes, a_vals, TCorr_vals, analType = anal, 
-                           filename = "{corrType}_{analType}_TD_*.csv", var_labels= "deduce", a_scaling= a_scaling)
-#'''
-''' # For HARMONIC PEAK (FFT ANALYSIS) of CORR DATA.
-analType= ["NCC", "ZNCC", "AMI", "MI", "BVMoransI"]
-for anal in analType:
-    print(f"Analysing {anal} FFT data..."); time.sleep(1)
-    analyse_FRAME_FFTCORRdata(in_dir, out_dir, prefixes, a_vals, TCorr_vals, analType = anal, corrsubdir="2DCorr/FFT/",
-            harm_peaks_index = [0], filename = "HarmonicPeaks_{corrType}_{analType}_TD_*.csv", 
-            var_labels= "deduce", a_scaling= a_scaling)
-#'''
+    #analyse_FRAME_POTdata(in_dir, out_dir, prefixes, a_vals, T_vals, find_minima= True, filename = "Gamma_Pot_Well.csv", 
+    #                          minimafilename = "Gamma_LOCAL_MINIMA.csv", var_labels= [ "GAM[G(x; t)]" , "GAM[Pr(x; t)]"])
+    ''' # For MEAN and Timeseries of CORR DATA.
+    analType= ["NCC", "ZNCC", "AMI", "MI", "BVMoransI"]
+    for anal in analType:
+        analyse_FRAME_CORRdata(in_dir, out_dir, prefixes, a_vals, TCorr_vals, analType = anal, 
+                               filename = "{corrType}_{analType}_TD_*.csv", var_labels= "deduce", a_scaling= a_scaling)
+    #'''
+    ''' # For HARMONIC PEAK (FFT ANALYSIS) of CORR DATA.
+    analType= ["NCC", "ZNCC", "AMI", "MI", "BVMoransI"]
+    for anal in analType:
+        print(f"Analysing {anal} FFT data..."); time.sleep(1)
+        analyse_FRAME_FFTCORRdata(in_dir, out_dir, prefixes, a_vals, TCorr_vals, analType = anal, corrsubdir="2DCorr/FFT/",
+                harm_peaks_index = [0], filename = "HarmonicPeaks_{corrType}_{analType}_TD_*.csv", 
+                var_labels= "deduce", a_scaling= a_scaling)
+    #'''
 
-#compare_list = {"Prefixes": [], "g": [], "dP": [100, 10000], "Geq": []}
-#compare_list = {"Prefixes": ["HsX2005-UA125A0-5E2UNI", "HsX2005-UA125A125-5E2UNI"], "g": [], "dP": [], "Geq": []}
-#multiplot_PRELIMS_CompareEQ(out_dir, out_dir, compare_list, prefixes = prefixes, meanfilename = "guess", var_labels= variable_labels)
+    #compare_list = {"Prefixes": [], "g": [], "dP": [100, 10000], "Geq": []}
+    #compare_list = {"Prefixes": ["HsX2005-UA125A0-5E2UNI", "HsX2005-UA125A125-5E2UNI"], "g": [], "dP": [], "Geq": []}
+    #multiplot_PRELIMS_CompareEQ(out_dir, out_dir, compare_list, prefixes = prefixes, meanfilename = "guess", var_labels= variable_labels)

@@ -724,7 +724,7 @@ def gen_FFT_PowerSpectra(files, pathtodir="", ext="csv", bin_mask= None, exclude
                 # This threshold value will be determined using GMM clustering with 2 clusters.
                 thresholds =pan.DataFrame(columns= col_labels)
                 for col in col_labels:
-                    data = df[col].dropna().to_numpy(dtype=np.float64).reshape(-1, 1)
+                    data = df[col].dropna().to_numpy(dtype=np.float64).reshape(-1, 1).copy()
                     # Normalise the data in each column by max value in the column.
                     data /= data.max() if data.max() != 0.0 else 1.0
                     gmm = GaussianMixture(n_components=2, covariance_type='full', random_state=gpu._cpu_np.random.randint(0, 1000))
@@ -1028,6 +1028,11 @@ It will save these clustered datasets as dataframes, and if evaluate_clusterfreq
 This is done by counting the size of each cluster (cluster sizes determined using scipy.ndimage.label) in each file.
 The frequency of cluster sizes across all files (replicates) is then stored in a dataframe and returned.
 If periodic is True, the cluster counting is done using periodic boundary conditions.
+Additionally if evaluate_clusterfrequencies is True, the function will also evaluate critical cluster-based statistics 
+such as mean cluster size, max cluster size, number of clusters etc. and return these as a dataframe.
+Finally if evaluate_crit_macrostats is True, the function will also evaluate critical frame--based macroscopic statistics such as mean spatial density of clustered frames,
+fraction of occupied sites in clustered frames, mean squared distance of clusters from the center of mass of the clustered frames etc. and return these as a dataframe.
+
 IMPORTANT: 
 Cluster_type can be: "Kmeans", "GMM" (Gaussian Mixture Model)
     "Zero" (all data points above 0 are assigned to cluster 1, all data points < = 0 are assigned to cluster 0)
@@ -1038,7 +1043,7 @@ list of column names that should not be clustered using Kmeans or GMM (i.e. thes
 If exclude_col_from_algorithm is not provided (empty list), "ZeroKmeans" or "ZeroGMM" will be identical to "Kmeans" or "GMM" respectively.
 """
 def gen_clustered_data(files, pathtodir="", ext="csv", exclude_col_labels= ["a_c", "x", "L"], Tmin= None, Tmax = None, save_frames= True,
-                        n_clusters=2, cluster_type="KMeans", evaluate_clusterfrequencies = True, periodic=True, verbose= False):
+                        n_clusters=2, cluster_type="KMeans", evaluate_crit_macrostats = True, evaluate_clusterfrequencies = True, periodic=True, verbose= False):
     
     # Get T and a values from the first file.
     Tval = re.search(r'T_[\d]+', files[0]).group(0).split("_")[1] if re.search(r'T_[\d]+', files[0]) else re.search(r'T_[\d]*[.][\d]+', files[0]).group(0).split("_")[1]
@@ -1047,26 +1052,37 @@ def gen_clustered_data(files, pathtodir="", ext="csv", exclude_col_labels= ["a_c
     if Tmin is not None:
         if float(Tval) < Tmin:
             print(f"Skipping T = {Tval} and a = {aval} as it is not in the range [{Tmin}, {Tmax}].")
-            return None
+            return None, None, None
     if Tmax is not None:
         if float(Tval) > Tmax:
             print(f"Skipping T = {Tval} and a = {aval} as it is not in the range [{Tmin}, {Tmax}].")
-            return None
+            return None, None, None
     print(f"Generating clustered data for T = {Tval} and a = {aval}.")
     
     # Read the first file in files.
     if(ext == "csv"):
-        df = pan.read_csv(files[0], header=0)
+        try:
+            df = pan.read_csv(files[0], header=0)
+        except Exception as e:
+            print("Error: Unable to read csv at " + pathtodir +"/" + files[0] + " with error message: \n" + str(e))
+            return None, None, None
     else:
         try:
             df = pan.read_table(files[0], header=0)
         except Exception as e:
             print("Error: Non-standard extension for file " + pathtodir +"/" + files[0] + " with error message: \n" + str(e))
-            return None
-    # Store column names in col_labels. Strip elements of any leading or trailing whitespaces.
+            return None, None, None
+    # Store column names in col_labels. Strip elements o f any leading or trailing whitespaces.
     col_labels = df.columns; col_labels = [col.strip() for col in col_labels]
     col_labels = [col for col in col_labels if col not in exclude_col_labels];
     count_cols =  [y + x + "]" for x in col_labels for y in ["CLUSTER_SIZE[", "CLUSTER_COUNTS[", "CLUSTER_FREQ["]]
+
+    macro_clusterstats_cols = ["Rmax", "a", "t"] + ["AVG[" + stat + col + "}]" for col in col_labels 
+            for stat in ["MEAN_CLUSTER_SIZE{", "NUM_CLUSTERS{"]] + ["VAR[" + stat + col + "}]" for col in col_labels for stat in ["MEAN_CLUSTER_SIZE{", "NUM_CLUSTERS{"]]
+
+    macro_framestats_cols = ["Rmax", "a", "t"] + ["AVG[" + stat + col + "}]" for col in col_labels 
+            for stat in ["CLUS_DENSITY{", "OCCUPIED_SITE_FRAC{", "MEAN_SQ_DIST_LCENTER{", "MEAN_SQ_DIST_COM{"]] + ["VAR[" + stat + col + "}]" 
+            for col in col_labels for stat in ["CLUS_DENSITY{", "OCCUPIED_SITE_FRAC{", "MEAN_SQ_DIST_LCENTER{", "MEAN_SQ_DIST_UCOM{"]]
     
     """ Additional logic to handle cluster_type OF "ZeroKmeans" or "ZeroGMM":
     if( (cluster_type == "ZeroKmeans" or cluster_type == "ZeroGMM")):
@@ -1080,26 +1096,68 @@ def gen_clustered_data(files, pathtodir="", ext="csv", exclude_col_labels= ["a_c
             print(f"Clustering algorithm {cluster_type} will be ONLY be applied to columns: {col_labels}...")
     all_col_labels = list(set(col_labels + exclude_col_labels_from_algo)) if exclude_col_labels_from_algo else col_labels
     """
+    df_cluster_freq = None; df_macro_clusterstats = None; df_macro_framestats = None;
+    macro_clusterstats_dict = None; macro_framestats_dict = None; 
+    # Initialize these variables to None. They will be assigned values only if the corresponding flags are True.
     if evaluate_clusterfrequencies:
         # Create a df with col_labels as column names. This will store the cluster frequencies.
         df_cluster_freq = pan.DataFrame(columns= count_cols)
+        # Default dict to store cluster sizes and counts for each column in col_labels.
+        cluster_freqs = defaultdict(Counter)
 
-    # Default dict to store cluster sizes and counts for each column in col_labels.
-    cluster_freqs = defaultdict(Counter)
+        df_macro_clusterstats = pan.DataFrame(columns= macro_clusterstats_cols)
+        # Similar default dict to store critical cluster-based statistics for each column in col_labels.
+        # Strucutre: macro_clusterstats_dict[key][column][clusterstat_key] = stat_value,
+        # where key is the common key across files (in this case (len(files), Tval)) i.e. (Rmax, Tval)
+        # column is the column in col_labels, clusterstat_key is the name of the cluster-based statistic
+        # (e.g. MEAN_CLUSTER_SIZE{{{col}}}_ALL, MEAN_CLUSTER_SIZE{{{col}}}_SURV, MEAN_CLUSTER_SIZE{{{col}}}_R_{Rstr} ... etc.)
+        macro_clusterstats_dict = defaultdict(nested_default_dict)
+
+    # Avoiding lambda functions for better readability and to avoid pickling issues
+    if evaluate_crit_macrostats:
+        df_macro_framestats = pan.DataFrame(columns= macro_framestats_cols)
+        macro_framestats_dict = defaultdict(nested_default_dict)
+        # Default dict to store critical frame-based macroscopic statistics for each column in col_labels.
+        # This has the structure: macro_framestats_dict[key][column][framestat_key] = stat_value, 
+        # where key is the common key across files (in this case (len(files), Tval)) i.e. (Rmax, Tval)
+        # column is the column in col_labels, framestat_key is the name of the macroscopic statistic 
+        # (e.g. "AVG[CLUS_DENSITY{{{col}}}]_ALL", "AVG[CLUS_DENSITY{{{col}}}]_SURV", CLUS_DENSITY{{{col}}}_R_{Rstr} .... etc.)
+
 
     Path(pathtodir + f"/CLUST/{cluster_type}_{n_clusters}").mkdir(parents=True, exist_ok=True)
 
-    for file in files:
+    # Precompiled regex patterns for T and R values
+    #T_intpattern = re.compile(r'T_(\d+)\b')
+    #T_floatpattern = re.compile(r'T_(\d+\.\d+)\b')
+    R_pattern = re.compile(r'R_(\d+)')
+
+    # Create common key for macro stats dicts.
+    common_key = (len(files), aval, Tval)
+
+    #for file in files:
+    for file in sorted_files_R(files, ascending=True):
+        # Extract R value (as "R_{}") from the filename using regex.
+        Rstr = R_pattern.search(file).group(0) if R_pattern.search(file) else None
+        if Rstr is None:
+            print(f"Error: Could not extract R value from filename {file} using regex pattern {R_pattern.pattern}. Skipping file...")
+            continue
+
+
 
         # First read the file.
         if(ext == "csv"):
-            df = pan.read_csv(file, header=0)
+            try:
+                df = pan.read_csv(file, header=0)
+            except Exception as e:
+                print("Error: Unable to read csv at " + pathtodir +"/" + files[0] + " with error message: \n" + str(e) +". Skipping file...")
+                continue
         else:
             try:
                 df = pan.read_table(file, header=0)
             except Exception as e:
-                print("Error: Non-standard extension for file " + pathtodir +"/" + files[0] + " with error message: \n" + str(e))
-                return None
+                print("Error: Non-standard extension for file " + pathtodir +"/" + files[0] + " with error message: \n" + str(e) +". Skipping file...")
+                continue
+                #return None, None, None
         # Modify column names in df to remove leading and trailing whitespaces.
         df.columns = [col.strip() for col in df.columns]
         # Remove exclude_col_labels from df.
@@ -1108,7 +1166,7 @@ def gen_clustered_data(files, pathtodir="", ext="csv", exclude_col_labels= ["a_c
         # First check if the columns in df are the same as col_labels. If not, return an error.
         if not all([col in df.columns for col in col_labels]):
             print("Error: Columns in file " + pathtodir + "/" + file + " are not standardised.")
-            return None
+            return None, None, None
         
         # Get L value from the first file.
         Lval = re.search(r'L_[\d]+', files[0]).group(0).split("_")[1] if re.search(r'L_[\d]+', files[0]) else re.search(r'L_[\d]*[.][\d]+', files[0]).group(0).split("_")[1]
@@ -1119,7 +1177,7 @@ def gen_clustered_data(files, pathtodir="", ext="csv", exclude_col_labels= ["a_c
         assert L == Lval, f"NOTE : L value in file {file} does not match the expected L value {Lval}. Found {L}."
 
         # Normalise the data in each column by max value in the column.
-        df[col_labels] = df[col_labels].apply(lambda x: x / x.max() if x.max() != 0.0 else 0, axis=0)
+        df[col_labels] = df[col_labels].apply(lambda x: x / x.max() if x.max() != 0.0 else pan.Series(0.0, index=x.index), axis=0)
 
         if save_frames:
             bin_df = pan.DataFrame(columns=col_labels) # This dataframe will store the binned data for each column in the files.
@@ -1165,7 +1223,8 @@ def gen_clustered_data(files, pathtodir="", ext="csv", exclude_col_labels= ["a_c
                 #'''
             elif cluster_type == "GMM":
                 test_df = pan.DataFrame({col: df[col]})
-                gmm_model = GaussianMixture(n_components=n_clusters, covariance_type='full', random_state=42).fit(test_df)
+                #train_df = test_df.sample(frac= trainfrac, random_state= np.random.randint(1,1000))
+                gmm_model = GaussianMixture(n_components=n_clusters, covariance_type='full', random_state=np.random.randint(1,1000)).fit(test_df)
                 #Get the cluster labels for each data point in col.
                 cluster_labels = gmm_model.fit_predict(test_df)
                 df["CLUSTER[" + col + "]"] = cluster_labels
@@ -1176,21 +1235,7 @@ def gen_clustered_data(files, pathtodir="", ext="csv", exclude_col_labels= ["a_c
                 centers = np.array([0, 1])
             else:
                 print(f"Error: Invalid cluster_type {cluster_type}. Use 'Kmeans' or 'GMM'.")
-                return None
-            
-            ''' OLD VERSION
-            palette = cluster_labels.astype(float())
-            ordered_palette = np.sort(np.unique(palette))
-
-            # Ensure that the cluster labels are in ascending order.
-            sorting_order = sorted(range(len(palette)), key=lambda k: palette[k][0], reverse=True)
-            if sorting_order != list(range(len(palette))):
-                print(f"Warning: Cluster labels are not in ascending order for column {col} in file {file}. Reordering cluster labels.")
-                for new_order, order in enumerate(sorting_order):
-                    df['CLUSTER[' + col + ']'] = df['CLUSTER[' + col + ']'].replace(order, new_order + n_clusters)
-                for new_order, order in enumerate(ordered_palette):
-                    df['CLUSTER[' + col + ']'] = df['CLUSTER[' + col + ']'].replace(new_order + n_clusters, new_order)
-            #'''
+                return None, None, None
 
              # Reorder cluster labels so that label 0 corresponds to the lowest cluster center, etc.
             
@@ -1204,66 +1249,84 @@ def gen_clustered_data(files, pathtodir="", ext="csv", exclude_col_labels= ["a_c
                 bin_df[col] = df['CLUSTER[' + col + ']']
             
 
-            if evaluate_clusterfrequencies:
+            if evaluate_clusterfrequencies or evaluate_crit_macrostats:
                 # First binarise df['CLUSTER[' + col + ']'] to get the cluster sizes.
                 # Here all values in df['CLUSTER[' + col + ']'] are either 0 or 1, where 1 indicates the presence of a cluster.
                 # All values in df['CLUSTER[' + col + ']'] > 0 are set to 1.
                 #bin_df[col] = df['CLUSTER[' + col + ']'].apply(lambda x: 1 if x > 0 else 0).values.reshape((L, L))
                 binary_mask = asarray(df[f"CLUSTER[{col}]"].values > 0).astype(int).reshape((L, L))
-                # Count the size of each cluster in col using scipy.ndimage.label.
+                
+                if evaluate_crit_macrostats:
+                    ''' Evaluate critical frame-based macroscopic statistics for the clustered frames in col, and store in macro_framestats_dict.
+                    # These are:
+                    i) CLUS_DENSITY{{{col}}}: mean spatial density of clustered frames for col in clustered file (obtained by masking df[col] with binary_mask and taking the mean).
+                    ii) OCCUPIED_SITE_FRAC{{{col}}}: fraction of occupied sites in clustered frames for col in clustered file (obtained by counting the number of occupied sites in binary_mask and dividing by total number of sites).
+                    iii) MEAN_SQ_DIST_LCENTER{{{col}}}: mean squared distance of clusters from the center of mass of the clustered frames for col in clustered file (obtained by using indices of the clustered sites in binary_mask, 
+                    and then calculating the mean squared distance of the clustered sites from the center point of the frame (L/2, L/2)).
+                    iv) MEAN_SQ_DIST_UCOM{{{col}}}: mean squared distance of clusters from the center of mass of the clustered frames for col in clustered file (obtained by using indices of the clustered sites in binary_mask, 
+                    calculating the center of mass of the clustered sites, and then calculating the mean squared distance of the clustered sites from the center of mass).
+                    '''
 
-                non_periodic_labels, num_ind_clusters = ndimage.label(binary_mask, structure=np.ones((3, 3)))
-                if periodic:
-                    for x in range(L):
-                        if non_periodic_labels[x, 0] > 0 and non_periodic_labels[x, -1] > 0:
-                            non_periodic_labels[non_periodic_labels == non_periodic_labels[x, -1]] = non_periodic_labels[x, 0]
-                            #Dealing with top and bottom borders.
-                    for x in range(0, L):
-                        if non_periodic_labels[0, x] > 0 and non_periodic_labels[-1, x] > 0:
-                            non_periodic_labels[non_periodic_labels == non_periodic_labels[-1, x]] = non_periodic_labels[0, x]
-                            #Dealing with L and R borders.
-
-                    # Get sorted label IDs
-                    label_ids = np.unique(non_periodic_labels) #Return labels in ascending order.
-                    for i in  range(1, len(label_ids)):
-                        if(label_ids[i] == label_ids[i-1] + 1):
-                            continue
-                        #Update LABEL ID to lowest extant value possible
-                        non_periodic_labels[non_periodic_labels == label_ids[i]] = label_ids[i-1] + 1
-                        label_ids[i] = label_ids[i-1] + 1
-
-                Clus_ID, Clus_Size = np.unique(non_periodic_labels, return_counts=True)
-
-                for sz, count in Counter(asnumpy(Clus_Size[1:])).items():
-                    cluster_freqs[col][sz] += count
+                    # Calculate CLUS_DENSITY{{{col}}}
+                    frame_statkey = f"CLUS_DENSITY{{{col}}}_{Rstr}"
+                    # Mask df[col] where df['CLUSTER[' + col + ']'] > 0, and take the mean to get the mean spatial density of clustered frames for col in clustered file.
+                    macro_framestats_dict[common_key][col][frame_statkey] = df[col][asnumpy(binary_mask.flatten()) > 0].mean()
+                    # Calculate OCCUPIED_SITE_FRAC{{{col}}}
+                    frame_statkey = f"OCCUPIED_SITE_FRAC{{{col}}}_{Rstr}"
+                    macro_framestats_dict[common_key][col][frame_statkey] = binary_mask.sum() / (L * L)
+                    # Calculate MEAN_SQ_DIST_LCENTER{{{col}}}
+                    frame_statkey = f"MEAN_SQ_DIST_LCENTER{{{col}}}_{Rstr}"
+                    indices = np.argwhere(binary_mask > 0)
+                    center = np.array([L/2, L/2])
+                    macro_framestats_dict[common_key][col][frame_statkey] = np.mean(np.sum(np.power(indices - center, 2), axis=1))
+                    # Calculate MEAN_SQ_DIST_UCOM{{{col}}}
+                    frame_statkey = f"MEAN_SQ_DIST_UCOM{{{col}}}_{Rstr}"
+                    unweighted_com = np.array(indices).mean(axis=0)
+                    macro_framestats_dict[common_key][col][frame_statkey] = np.mean(np.sum(np.power(indices - unweighted_com, 2), axis=1))
 
 
-                """ # Using df approach with np.unique
-                label_ids = Clus_ID
-                CSize, NS = np.unique(Clus_Size[1:], return_counts=True)
-                # If df_cluster_freq["CLUSTER_SIZE[" + col + "]"] is empty, initialise it with the cluster sizes.
-                if df_cluster_freq[f"CLUSTER_COUNTS[{col}]"].empty:
-                    df_cluster_freq[f"CLUSTER_COUNTS[{col}]"] = NS
-                if df_cluster_freq[f"CLUSTER_SIZE[{col}]"].empty:
-                    df_cluster_freq[f"CLUSTER_SIZE[{col}]"] = CSize
-                else:
-                    for i in range(len(CSize)):
-                        # If CSize[i] is in df_cluster_freq["CLUSTER_SIZE[" + col + "]"], update the cluster size and cluster counts.
-                        if CSize[i] in df_cluster_freq[f"CLUSTER_SIZE[{col}]"].values:
-                            df_cluster_freq[f"CLUSTER_SIZE[{col}]"].iloc[df_cluster_freq[f"CLUSTER_SIZE[{col}]"].values == CSize[i]] = CSize[i]
-                            df_cluster_freq[f"CLUSTER_COUNTS[{col}]"].iloc[df_cluster_freq[f"CLUSTER_SIZE[{col}]"].values == CSize[i]] += NS[i]
-                        else:
-                            # If CSize[i] is not in df_cluster_freq["CLUSTER_SIZE[" + col + "]"], append it to the end.
-                            df_cluster_freq[f"CLUSTER_SIZE[{col}]"] = pan.concat([df_cluster_freq[f"CLUSTER_SIZE[{col}]"], pan.Series([CSize[i]])], ignore_index=True)
-                            df_cluster_freq[f"CLUSTER_COUNTS[{col}]"] = pan.concat([df_cluster_freq[f"CLUSTER_COUNTS[{col}]"], pan.Series([NS[i]])], ignore_index=True)
-                              
-                # Sort the above two columns in df_cluster_freq by cluster size.
-                df_cluster_freq[[f"CLUSTER_SIZE[{col}]", f"CLUSTER_COUNTS[{col}]"]] = df_cluster_freq[[f"CLUSTER_SIZE[{col}]", 
-                        f"CLUSTER_COUNTS[{col}]"]].sort_values(by=f"CLUSTER_SIZE[{col}]").reset_index(drop=True)
+                if evaluate_clusterfrequencies:
+                    # Count the size of each cluster in col using scipy.ndimage.label.
+                    non_periodic_labels, num_ind_clusters = ndimage.label(binary_mask, structure=np.ones((3, 3)))
+                    if periodic:
+                        for x in range(L):
+                            if non_periodic_labels[x, 0] > 0 and non_periodic_labels[x, -1] > 0:
+                                non_periodic_labels[non_periodic_labels == non_periodic_labels[x, -1]] = non_periodic_labels[x, 0]
+                                #Dealing with top and bottom borders.
+                        for x in range(0, L):
+                            if non_periodic_labels[0, x] > 0 and non_periodic_labels[-1, x] > 0:
+                                non_periodic_labels[non_periodic_labels == non_periodic_labels[-1, x]] = non_periodic_labels[0, x]
+                                #Dealing with L and R borders.
 
-                # Reset the index of the DataFrame.
-                df_cluster_freq.reset_index(drop=True, inplace=True)
-                 #""" 
+                        # Get sorted label IDs
+                        label_ids = np.unique(non_periodic_labels) #Return labels in ascending order.
+                        for i in  range(1, len(label_ids)):
+                            if(label_ids[i] == label_ids[i-1] + 1):
+                                continue
+                            #Update LABEL ID to lowest extant value possible
+                            non_periodic_labels[non_periodic_labels == label_ids[i]] = label_ids[i-1] + 1
+                            label_ids[i] = label_ids[i-1] + 1
+
+                    Clus_ID, Clus_Size = np.unique(non_periodic_labels, return_counts=True)
+
+                    for sz, count in Counter(asnumpy(Clus_Size[1:])).items():
+                        cluster_freqs[col][sz] += count
+
+                    '''Finally, using cluster_freqs evaluate critical cluster-based statistics for the clusters in col, and store in macro_clusterstats_dict.
+                    # These are:
+                    i) MEAN_CLUSTER_SIZE{{{col}}}: mean cluster size for clusters in col
+                    ii) VAR_CLUSTER_SIZE{{{col}}}: variance of cluster size for clusters in col
+                    iii) NUM_CLUSTERS{{{col}}}: number of clusters in col
+                    '''
+
+                    cluster_statkey = f"MEAN_CLUSTER_SIZE{{{col}}}_{Rstr}"
+                    # Using cluster sizes given by Clus_Size[1:] (excluding the background cluster), 
+                    # evaluate the mean cluster size for clusters in col, and store in macro_clusterstats_dict.
+                    macro_clusterstats_dict[common_key][col][cluster_statkey] = np.mean(asnumpy(Clus_Size[1:])) if len(Clus_Size[1:]) > 0 else 0
+                    cluster_statkey = f"VAR_CLUSTER_SIZE{{{col}}}_{Rstr}" 
+                    macro_clusterstats_dict[common_key][col][cluster_statkey] = np.var(asnumpy(Clus_Size[1:])) if len(Clus_Size[1:]) > 0 else 0
+                    cluster_statkey = f"NUM_CLUSTERS{{{col}}}_{Rstr}"
+                    macro_clusterstats_dict[common_key][col][cluster_statkey] = len(Clus_Size[1:])
         # End of all columns in col_labels for file.
         # Save the clustered data given by df['CLUSTER[' + col + ']'] in the file.
         # Use the file name to save the clustered data (adding CLUSTER_ prefix to the file name).
@@ -1279,9 +1342,75 @@ def gen_clustered_data(files, pathtodir="", ext="csv", exclude_col_labels= ["a_c
             df_cluster_freq[f"CLUSTER_SIZE[{col}]"] = all_size_fits_all
             df_cluster_freq[f"CLUSTER_COUNTS[{col}]"] = counts
             df_cluster_freq[f"CLUSTER_FREQ[{col}]"] = pan.Series(np.array(counts) / sum(counts)) if sum(counts) > 0 else 0
-        return df_cluster_freq
-    return None
 
+        # Average and variance of cluster-based statistics across replicates for each column in col_labels, and store in df_macro_clusterstats.
+        # Recall macro_clusterstats_dict is a nested defaultdict of the form:
+        # macro_clusterstats_dict[key][column][clusterstat_key] = stat_value,
+        # where key is the common key across files (in this case (len(files), Tval)) i.e. (Rmax, Tval)
+        # column is the column in col_labels, clusterstat_key is the name of the cluster-based statistic
+        # (e.g. MEAN_CLUSTER_SIZE{{{col}}}_R_{Rstr} ... etc.)
+        #df_macro_clusterstats = pan.DataFrame(columns= macro_clusterstats_cols)
+        if macro_clusterstats_dict is not None:
+            row = {"Rmax": common_key[0], "a": common_key[1], "t": common_key[2]}
+            for key in macro_clusterstats_dict:
+                #row = {"Rmax": key[0], "a": key[1], "t": key[2]}
+                for col, rep_var_data in macro_clusterstats_dict[key].items():
+                    meanclustsize_repvals = [val for stat_key, val in rep_var_data.items() if stat_key.startswith("MEAN_CLUSTER_SIZE{")]
+                    numclust_repvals = [val for stat_key, val in rep_var_data.items() if stat_key.startswith("NUM_CLUSTERS{")]
+                    # Add the mean and std of the mean cluster size across replicates to the row.
+                    row[f"AVG[MEAN_CLUSTER_SIZE{{{col}}}]"] = np.mean(meanclustsize_repvals) if len(meanclustsize_repvals) > 0 else np.nan
+                    row[f"VAR[MEAN_CLUSTER_SIZE{{{col}}}]"] = np.var(meanclustsize_repvals) if len(meanclustsize_repvals) > 0 else np.nan
+                    # Add the mean and std of the number of clusters across replicates to the row.
+                    row[f"AVG[NUM_CLUSTERS{{{col}}}]"] = np.mean(numclust_repvals) if len(numclust_repvals) > 0 else np.nan
+                    row[f"VAR[NUM_CLUSTERS{{{col}}}]"] = np.var(numclust_repvals) if len(numclust_repvals) > 0 else np.nan
+                    # Finally update row with individual replicate values (rep_var_data)
+                    row.update(rep_var_data)
+            #df_macro_clusterstats = pan.concat([df_macro_clusterstats, pan.DataFrame([row])], ignore_index=True)
+            df_macro_clusterstats = pan.DataFrame([row])
+            ordered_cols = macro_clusterstats_cols + [col for col in df_macro_clusterstats.columns if col not in macro_clusterstats_cols]
+            df_macro_clusterstats = df_macro_clusterstats.reindex(columns=ordered_cols)
+        #return df_cluster_freq
+
+    if evaluate_crit_macrostats:
+        # Average and variance of frame-based macroscopic statistics across replicates for each column in col_labels, and store in df_macro_framestats.
+        # Recall macro_framestats_dict is a nested defaultdict of the form:
+        # macro_framestats_dict[key][column][framestat_key] = stat_value, 
+        # where key is the common key across files (in this case (len(files), Tval)) i.e. (Rmax, Tval)
+        # column is the column in col_labels, framestat_key is the name of the macroscopic statistic 
+        # (e.g. "AVG[CLUS_DENSITY{{{col}}}]_R_{Rstr} .... etc.)
+        #df_macro_framestats = pan.DataFrame(columns= macro_framestats_cols)
+        if macro_framestats_dict is not None:
+            row = {"Rmax": common_key[0], "a": common_key[1], "t": common_key[2]}
+            for key in macro_framestats_dict:
+                #row = {"Rmax": key[0], "a": key[1], "t": key[2]}
+                for col, rep_var_data in macro_framestats_dict[key].items():
+                    clus_density_repvals = [val for stat_key, val in rep_var_data.items() if stat_key.startswith("CLUS_DENSITY{")]
+                    occupied_site_frac_repvals = [val for stat_key, val in rep_var_data.items() if stat_key.startswith("OCCUPIED_SITE_FRAC{")]
+                    mean_sq_dist_lcenter_repvals = [val for stat_key, val in rep_var_data.items() if stat_key.startswith("MEAN_SQ_DIST_LCENTER{")]
+                    mean_sq_dist_ucom_repvals = [val for stat_key, val in rep_var_data.items() if stat_key.startswith("MEAN_SQ_DIST_UCOM{")]
+                    # Add the mean and std of the mean spatial density of clustered frames across replicates to the row.
+                    row[f"AVG[CLUS_DENSITY{{{col}}}]"] = np.mean(clus_density_repvals) if len(clus_density_repvals) > 0 else np.nan
+                    row[f"VAR[CLUS_DENSITY{{{col}}}]"] = np.var(clus_density_repvals) if len(clus_density_repvals) > 0 else np.nan
+                    # Add the mean and std of the fraction of occupied sites in clustered frames across replicates to the row.
+                    row[f"AVG[OCCUPIED_SITE_FRAC{{{col}}}]"] = np.mean(occupied_site_frac_repvals) if len(occupied_site_frac_repvals) > 0 else np.nan
+                    row[f"VAR[OCCUPIED_SITE_FRAC{{{col}}}]"] = np.var(occupied_site_frac_repvals) if len(occupied_site_frac_repvals) > 0 else np.nan
+                    # Add the mean and std of the mean squared distance of clusters from the center of the frame across replicates to the row.
+                    row[f"AVG[MEAN_SQ_DIST_LCENTER{{{col}}}]"] = np.mean(mean_sq_dist_lcenter_repvals) if len(mean_sq_dist_lcenter_repvals) > 0 else np.nan
+                    row[f"VAR[MEAN_SQ_DIST_LCENTER{{{col}}}]"] = np.var(mean_sq_dist_lcenter_repvals) if len(mean_sq_dist_lcenter_repvals) > 0 else np.nan
+                    # Add the mean and std of the mean squared distance of clusters from the center of mass across replicates to the row.
+                    row[f"AVG[MEAN_SQ_DIST_UCOM{{{col}}}]"] = np.mean(mean_sq_dist_ucom_repvals) if len(mean_sq_dist_ucom_repvals) > 0 else np.nan
+                    row[f"VAR[MEAN_SQ_DIST_UCOM{{{col}}}]"] = np.var(mean_sq_dist_ucom_repvals) if len(mean_sq_dist_ucom_repvals) > 0 else np.nan
+                    # Finally update row with individual replicate values (rep_var_data)
+                    row.update(rep_var_data)
+            #df_macro_framestats = pan.concat([df_macro_framestats, pan.DataFrame([row])], ignore_index=True)
+            df_macro_framestats = pan.DataFrame([row])
+            ordered_cols = macro_framestats_cols + [col for col in df_macro_framestats.columns if col not in macro_framestats_cols]
+            df_macro_framestats = df_macro_framestats.reindex(columns=ordered_cols) # Reindexing to ensure order.
+        
+        
+    # If corresponding flags are False, the variables df_cluster_freq, df_macro_clusterstats and df_macro_framestats will be None. 
+    # This is intentional, as it indicates that the corresponding computations were not performed.
+    return df_cluster_freq, df_macro_clusterstats, df_macro_framestats
 
 
 def compute_mutual_information(X, Y, bins="scotts", verbose= False):

@@ -4094,6 +4094,8 @@ void rietkerk_Dornic_2D_MultiSp(D2Vec_Double &Rho, vector <double> &t_meas, doub
 				DRho[s][i] = Rho_dt[s][i]; //Assigning initial conditions
 				Rho_tsar[s][i] =Rho_dt[s][i];
 			}
+			//for(int s=1; s < SpB; s++)
+			//   gamma[s][i] = 1.0; // Set gamma to 0.0 for debugging.
 		}
 		
 		stringstream m1_2;     //To make cout thread-safe as well as non-garbled due to race conditions.
@@ -4298,6 +4300,7 @@ void rietkerk_Dornic_2D_MultiSp(D2Vec_Double &Rho, vector <double> &t_meas, doub
 			vector <double> temp_veg= {DRho[0].begin(),DRho[0].end()}; //Rho_dt for species '0'
 			double rhox_num_veg = occupied_sites_of_vector(temp_veg, g*g); //Finds number of occupied sites at given t.
 			vector<double>().swap(temp_veg); //Flush temp out of memory.
+			//double nR_fac = 1;
 			double nR_fac = 1 - rhox_num_veg/(g*g); //Factor to reduce the number of neighbours for gamma_i estimation
 			if (nR_fac < 0.35)
 			{	nR_fac = 0.35; }
@@ -4974,7 +4977,7 @@ void first_order_critical_exp_delta_stochastic_MultiSp(int div, double t_max, do
 		sort( frame_tmeas.begin(), frame_tmeas.end() );
 
 		// Create a linear window from 80000 to 150000, spaced 500 apart (141 points).
-		vector <double> t_frame_linearwindow2 = linspace(80000, 150000, 141);
+		vector <double> t_frame_linearwindow2 = linspace(80000, 120000, 81);
 		// Insert into t_measure vector after the element in t_measure that is just less than the first element in t_frame_linearwindow2.
 		auto it2 = std::upper_bound(t_measure.begin(), t_measure.end(), t_frame_linearwindow2[0]);
 		t_measure.insert(it2, t_frame_linearwindow2.begin(), t_frame_linearwindow2.end());

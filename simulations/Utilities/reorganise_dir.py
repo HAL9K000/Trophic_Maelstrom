@@ -705,7 +705,7 @@ def post_process_subdir(subdirpath, prefix, filetype_ID="FRAME", tmin=tmin, tmax
             # across replicates to a csv file in subdirpath/CLUST/{cluster_type}_{n_clusters}/
             cluster_type = "GMM" # or "KMeans", "GMM", "Zero".
             nclusters = 2 # Number of clusters to find.
-            df_clustered_freqs = gen_clustered_data(files, pathtodir=subdirpath, ext="csv", exclude_col_labels= ["a_c", "x", "L", "W(x; t)", "O(x; t)"], 
+            df_clustered_freqs, df_macro_clusterstats, df_macro_framestats= gen_clustered_data(files, pathtodir=subdirpath, ext="csv", exclude_col_labels= ["a_c", "x", "L", "W(x; t)", "O(x; t)"], 
                     Tmin = tmin, Tmax = tmax, n_clusters=nclusters, cluster_type=cluster_type, evaluate_clusterfrequencies= True, periodic=True, save_frames= False)
             #Path(subdirpath + "/CLUST/Kmeans_2").mkdir(parents=True, exist_ok=True)
             try:
@@ -713,6 +713,18 @@ def post_process_subdir(subdirpath, prefix, filetype_ID="FRAME", tmin=tmin, tmax
                     df_clustered_freqs.to_csv(subdirpath + f"/CLUST/{cluster_type}_{nclusters}/CLUSTERED_FREQUENCIES.csv", sep=",", index=False, header=True)
             except Exception as e:
                 print("Error: Could not write clustered data to " + subdirpath + f"/CLUST/{cluster_type}_{nclusters}/CLUSTERED_FREQUENCIES.csv with error message: \n" + str(e))
+
+            try:
+                if df_macro_clusterstats is not None:
+                    df_macro_clusterstats.to_csv(subdirpath + f"/CLUST/{cluster_type}_{nclusters}/MACRO_CLUSTERSTATS.csv", sep=",", index=False, header=True)
+            except Exception as e:
+                print("Error: Could not write macro cluster stats to " + subdirpath + f"/CLUST/{cluster_type}_{nclusters}/MACRO_CLUSTERSTATS.csv with error message: \n" + str(e))
+
+            try:
+                if df_macro_framestats is not None:
+                    df_macro_framestats.to_csv(subdirpath + f"/CLUST/{cluster_type}_{nclusters}/MACRO_FRAMESTATS.csv", sep=",", index=False, header=True)
+            except Exception as e:
+                print("Error: Could not write macro frame stats to " + subdirpath + f"/CLUST/{cluster_type}_{nclusters}/MACRO_FRAMESTATS.csv with error message: \n" + str(e))
             #'''
 
             '''# Find potential well data in files using gen_potential_well_data.
@@ -823,6 +835,8 @@ def unified_post_process(prefixes= [], filetype_ID="FRAME", ncores= CPU_Ncores, 
                     print(result)
             print("\n=====================================================================================================\n")
             print(f"Done post-processing {filetype_ID} for prefix: {pre}...")
+            print(f"With successful post-processing directory evaluations: {len(successful_results)} / {len(all_valid_subdirpaths)}"
+                  f" and {len(results) - len(successful_results)} errors or skipped subdirectories")
             print("\n=====================================================================================================\n")
     finally:
         if gpu.DASK_AVAILABLE and daskclient is not None:
@@ -1214,13 +1228,12 @@ else:
 start_time_CPU = time.time()
 end_time_CPU = None
     
-
 if __name__ == "__main__":
     main()
-    #post_process(prefixes)
-    unified_post_process(prefixes, "FRAME", ncores= CPU_Ncores, tmin=140000, tmax = 200000)
+    #post_process(prefixes) # OLD, IGNORE
+    unified_post_process(prefixes, "FRAME", ncores= CPU_Ncores, tmin=80000, tmax = 200000)
     unified_post_process(prefixes, "GAMMA", ncores= CPU_Ncores, tmin=70000)
-    #post_process_gamma(prefixes)
+    #post_process_gamma(prefixes)  # OLD, IGNORE
     #post_imgprocess(prefixes= prefixes, Trange=[82000.1, 84000, 86000, 88000, 90000, 92000, 94000, 96000, 98000, 100000], largest_T_only= True)
     #post_imgprocess(prefixes= prefixes, Trange=[0, 6000], largest_T_only= True)
     #post_imgprocess(prefixes= prefixes, Trange=[0, 5001], largest_T_only= True)

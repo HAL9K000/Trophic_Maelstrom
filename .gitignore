@@ -2,6 +2,8 @@
 
 figures/
 **/Data/
+**/.vscode/
+**/**/.vscode/
 Images/**/
 simulations/NSLE_Mage/
 simulations/Deprecated/
@@ -15,6 +17,7 @@ simulations/Riekerk_Sensei/Deprecated_Assets/
 *.7z
 *.png
 *.ai
+*.json
 !MSThesisFigures/NPDPSchema.png
 !MSThesisFigures/TCPSchema.png
 !MSThesisFigures/DensityTable.png

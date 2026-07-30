@@ -129,6 +129,7 @@ int main(int argc, char *argv[])
   double E[SpB] ={1.0, ej, em}; //Efficiency of consumption.
   //double D[Sp] ={d0, d1}; //Diffusion coefficients for species. (in km^2/hr)
   double pR[Sp] ={0.0, 1.04285/2.0, 1.25536/2.0}; //Perception radius of species (in km)
+  //double pR[Sp] ={0.0, 1.04285, 1.25536/2.0}; //Perception radius of species (in km)
 
   double init_frac_pred = 1.0; //Initial fraction of grazers and predators in the high state.
   
