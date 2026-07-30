@@ -2,7 +2,7 @@
 ## A High Performance Simulation and Data-Analysis Pipeline For Desertification Transitions. ⚡⚡
 
 A scientific HPC SPDE (Stochastic Partial Differential Equation) codebase for spatial ecological simulations: the Rietkerk vegetation-water dryland model (extended to a 3-species vegetation-grazer-predator trophic chain) and directed-percolation
-(DP) model (implemented as the Reggeon Field Theoretic Equation) as used as simpler analogues for studying critical phenomena. The codebase spans three layers:
+(DP) model (implemented as the Reggeon Field Theoretic Equation, similarly extended to 1/2/3 species trophic chains) as used as simpler analogues for studying critical phenomena. The codebase spans three layers:
 C++/CUDA simulation engines, a Python/Bash layer that collates simulation data, and then reorganises and statistically post-processes their raw output, and a Python visualisation layer that turns the result into heatmaps, videos, and summary plots.
 
 ## Architecture
@@ -21,11 +21,11 @@ Three model implementations, each independently compiled (no Makefile -- see eac
 `g++`/`nvcc` invocations and compile-time macros):
 
 - **[`simulations/Rietkerk_FD/`](simulations/Rietkerk_FD/README.md)** -- finite-difference stochastic
-  implementation of the Rietkerk vegetation-water model (1/2/3-species trophic chain).
+  implementation of the Rietkerk vegetation-water model (1/2/3-species trophic chain) (CPU-validated ✅, CUDA accelerated path contains **known bugs** ❌ ).
 - **[`simulations/Rietkerk_FPE/`](simulations/Rietkerk_FPE/README.md)** -- Fokker-Planck-equation variant of
   the same model, adding an advection-diffusion step (GPU-validated ✅; CPU-only path is more experimental and may contain unverified bugs ⚠️⚠️).
 - **[`simulations/Percolation_FD/`](simulations/Percolation_FD/README.md)** -- multi-species
-  scale free model, implemented as the Reggeon Field Theoretic Equation, and belonging to the Directed Percolation (DP) universality class.
+  scale free model, implemented as the Reggeon Field Theoretic Equation, and belonging to the Directed Percolation (DP) universality class (1/2/3-species trophic chain) (CPU-validated ✅, CUDA accelerated path contains **known bugs** ❌ ).
 
 All three write raw per-replicate CSV output into an ad hoc directory tree under `simulations/Data/`.
 
