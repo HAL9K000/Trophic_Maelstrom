@@ -26,9 +26,9 @@ For the repository-wide picture (how this fits with the C++ simulators and `Data
 - `numpy`, `pandas`, `scipy`, `regex`
 - `scikit-learn` (`sklearn.cluster.KMeans`, `sklearn.mixture.GaussianMixture`)
 - `scikit-image`, `esda`, `libpysal` (spatial statistics — Moran's I)
-- `dask`/`dask.distributed` and/or `joblib` (parallel post-processing)
+- `dask`/`dask.distributed` and/or `joblib` (parallel post-processing) — NOTE: Dask is **strongly recommended** over joblib for concurrent CPU multi--threading over shared GPU devices, as it negates Python's GIL.
 - Optionally: `cupy` + `cupyx.scipy.{fft,signal,ndimage}` for GPU acceleration (see [GPU vs
-  CPU](#gpu-vs-cpu-when-to-use---gpu)) — entirely optional, everything degrades gracefully to NumPy/SciPy if
+  CPU](#gpu-vs-cpu-when-to-use---gpu)) — entirely optional but **recommended** for grid sizes `L² >= 256x256`, everything degrades gracefully to NumPy/SciPy if
   `cupy` isn't importable or `USE_GPU`/`--gpu` isn't set.
 - `7z` (`p7zip`), only if using `dreamcatcher_automata.bash`'s compression step.
 - `rsync` and `expect`, only if using `dreamcatcher_automata.bash`'s remote-device data-collation step (see
@@ -211,12 +211,7 @@ eyeballing a time series.
 ### GPU vs. CPU: when to use `--gpu`
 
 The synchrony analysis above (2D FFT cross-correlation over every timepoint pair, for every column pair, for
-every replicate) is by far the most computationally expensive stage in this pipeline. **For grid sizes `L
->= 256`, running this on a GPU is substantially faster than the CPU-only path** — use `--gpu` whenever you're
-running `post_imgprocess`/synchrony analysis at these grid sizes on a machine with a usable CUDA GPU and
-`cupy` installed. For smaller grids, or for the copy/rename and basic per-snapshot statistics stages, the
-CPU path is generally fine and simpler to reason about (no GPU memory/oversubscription concerns — see the
-[warning below](#gpu-oversubscription-warning) about combining `--gpu` with batch automation).
+every replicate) is by far the most computationally expensive stage in this pipeline. ⚠️⚠️ **For grid sizes `L>= 256`, running this on a GPU is substantially faster than the CPU-only path** — use `--gpu` whenever you're running `post_imgprocess`/synchrony analysis at these grid sizes on a machine with a usable CUDA GPU and `cupy` installed. Also note, combining the `--gpu` path with `dask` as opposed to `joblib` is **strongly recommended for concurrent CPU-GPU interops on shared GPU resources**, as the former avoids the Python GIL for each CPU thread. For smaller grids, or for the copy/rename and basic per-snapshot statistics stages, the CPU path is generally fine and simpler to reason about (no GPU memory/oversubscription concerns — see the [warning below](#gpu-oversubscription-warning) about combining `--gpu` with batch automation).
 
 ## `reorganise_prelims_dir.py`
 
