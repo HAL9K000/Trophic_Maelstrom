@@ -1916,6 +1916,8 @@ def gen_1D_HarmonicFreq_Prelimsdata(df, pathtodir="", X="t", exclude_Y_cols=[], 
             print(f"Error: Length of provided X-array ({len(X)}) does not match the length of the dataframe ({len(df_timeseries)}).")
             return None, None
         # If it matches, set Xvalues to X.
+        df_timeseries["FFT_X"] = Xvalues  # Add X as a column to the dataframe for FFT processing.
+        X = "FFT_X"  # Set X to the new column name for further processing.
     elif isinstance(X, str):
         # If X_as_index, check if df is MultiIndex, and if so, set X as provided X label, else if single index, set X as the single index.
         if X in df_timeseries.columns:
@@ -1933,7 +1935,10 @@ def gen_1D_HarmonicFreq_Prelimsdata(df, pathtodir="", X="t", exclude_Y_cols=[], 
     # Dro
     # Next remove exclude_Y_cols from df_timeseries
     Y_cols = [col for col in df_timeseries.columns if col not in exclude_Y_cols and col != X and col not in df_timeseries.index.names]
-    df_timeseries = df_timeseries[[X] + Y_cols]
+    if isinstance(X, str):
+        df_timeseries = df_timeseries[[X] + Y_cols]
+    else:
+        df_timeseries = df_timeseries[Y_cols]  
 
     # Replace missing values with 0.0
     df_timeseries.fillna(0.0, inplace=True)
@@ -1941,10 +1946,22 @@ def gen_1D_HarmonicFreq_Prelimsdata(df, pathtodir="", X="t", exclude_Y_cols=[], 
     # Also check if Xvalues is linearly spaced (i.e. std of the differences is < 1)
     if np.std(np.diff(Xvalues)) > 1:
         print(f"Error: Detected X-values are not linearly spaced. Please provide a valid X array reference.")
-        print(f"X-values: {Xvalues}")
+        #print(f"X-values: {Xvalues}")
         print(f"X-diff: {np.diff(Xvalues)}")
         print(f"X-diff-std: {np.std(np.diff(Xvalues))}")
-        return None, None
+        #return None, None
+        # Try interpolating df_timeseries to a linear space, using gen_interpolated_df()
+        print("WARNING: Interpolating time values in file to generate a standardised time range.")
+        # First generate a linear space of X values using max and min values of df_timeseries[X]
+        Xvalues = np.linspace(np.min(Xvalues), np.max(Xvalues), len(df_timeseries))
+        # Save Xvalues as column "X" in a new temp dataframe called df_temp
+        df_temp = pan.DataFrame({X: Xvalues})
+        df_timeseries = gen_interpolated_df(df_temp, df_timeseries, X)
+        if df is None:
+            print(f"Error: Interpolation failed at {pathtodir}, with compare_label={X}")
+            return None, None
+        Xvalues = df_timeseries[X].values  # Update Xvalues to the new interpolated values
+        print(f"Interpolation successful. New Xvalues length: {len(Xvalues)}, with STD of differences: {np.std(np.diff(Xvalues))}")
 
     df_fft[f"k({X})"] = np.fft.fftfreq(len(Xvalues), d=(Xvalues[1] - Xvalues[0]))[:len(Xvalues)//2] 
     # Get the positive frequencies corresponding to the FFT result
@@ -2283,3 +2300,4 @@ def gen_MEAN_INDVL_Prelimsfiledata(files, pathtodir="", ext="csv", tmax =None, d
         df_file["t"] = pooled_df["t"]
     
     return df_file
+        

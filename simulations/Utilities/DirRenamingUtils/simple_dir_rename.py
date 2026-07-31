@@ -49,7 +49,7 @@ def rename_files_in_directory(dir_path, old_pattern, new_pattern, user_confirmat
 if __name__ == "__main__":
     # Example usage
     dir_paths = [
-        "../Data/DP/Frames/Stochastic/3Sp_mG_20_mP_100/DsB6L9-UA0A0-1UNI_0.00172-0.00173_dP_1_Geq_0/",
+        "../../Data/DP/Frames/Stochastic/3Sp_mG_20_mP_100/DsB6L9-UA0A0-1UNI_0.00172-0.00173_dP_1_Geq_0/",
     ]
     old_pattern = "_a_1.728_"  # Example old pattern to be replaced
     new_pattern = "_a_1.7275_"  # Example new pattern to replace with

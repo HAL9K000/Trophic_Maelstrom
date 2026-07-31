@@ -1,27 +1,18 @@
 # Percolation_FD Documentation
 
-Finite-difference (Dornic-scheme) stochastic implementation of a multi-species stochastic partial-directed-
-percolation (SPDP) model, extended to a 1/2/3-species trophic chain (vegetation → grazer → predator). It is
-used as a structurally simpler analogue of the Rietkerk model (see `../Rietkerk_FD`) for studying
-absorbing-state phase transitions and critical phenomena, since it drops the vegetation-water coupling
-while keeping the same trophic-interaction and stochastic-integration machinery. Simulations run on a 2D
-periodic lattice, parallelised over OpenMP threads (one thread per replicate/control-parameter combination).
-Species interaction terms ("gamma", the local grazing/predation coupling) are computed each timestep either
-directly over a neighbourhood (O(N²)) or via a cached FFT convolution (O(N² log N)) using FFTW3, and initial
-frames can be generated from closed-form expressions parsed at runtime with ExprTk. Each run scans a range
-of the control parameter `a` and writes CSV frames, per-timestep aggregate ("Prelim") data, and summary
-order-parameter statistics to disk.
+Finite-difference (Dornic-scheme) stochastic implementation of a multi-species Reggeon Field Theoretic Langevin Equation model, showing scale--invariance behaviour belonging to the Directed Percolation (DP) Universality class, extended to a 1/2/3-species trophic chain (vegetation → grazer → predator). It is used as a structurally simpler analogue of the stochastic Rietkerk model (see `../Rietkerk_FD`) for studying
+absorbing-state phase transitions and critical phenomena, since it drops the vegetation-water coupling while keeping the same trophic-interaction and stochastic-integration machinery. Simulations run on a 2D periodic lattice, parallelised over OpenMP threads (one thread per replicate/control-parameter combination).
+Species interaction terms ("gamma" (γ), the probability of local non-directional dispersal) are computed each timestep either directly over the perception neighbourhood area Ω  (O(N²*Ω)) or via a cached FFT convolution (O(N² log Ω)) using FFTW3, and initial frames can be generated from closed-form expressions parsed at runtime with ExprTk. Each run scans a range of the control parameter `a` and writes CSV frames, per-timestep aggregate ("Prelim") data, and summary order-parameter statistics to disk.
 
 This document covers the two core implementation files — `multiSPDP.cpp`/`MultiSPDP.h` and the
 `order_*stocDP_unity.cpp`/`order_*stocDP_burnin.cpp` drivers that link against them — and how to compile and
-run them. The directory also contains a separate, simpler single-species DP implementation
+run them. `SimpleDP_Analysis/` holds a separate, simpler single-species DP implementation
 (`SPDP.h`/`stochasticSPDP.cpp` and its interactive analysis drivers `bifurc_prob.cpp`,
-`finite_scaling_delta.cpp`, `spreading_exp_test.cpp`, etc.), a CUDA kernel, and older scratch code (`New/`);
-these are not covered here — consult those files directly if you need them.
+`finite_scaling_delta.cpp`, `spreading_exp_test.cpp`, etc.), and there is also a CUDA kernel and older scratch
+code (`New/`); none of these are covered here — consult those files directly if you need them.
 
 For the repository-wide picture (data-output conventions, how this fits with `Rietkerk_FD`, `Rietkerk_FPE`,
-and the `Utilities`/`Data_Processing` post-processing scripts), see the top-level `simulations` README and
-`/CLAUDE.md`.
+and the `Utilities`/`Data_Processing` post-processing scripts), see the top-level `simulations` README.
 
 ## Dependencies
 
@@ -70,12 +61,17 @@ Usage: twilight_screening.bash <Path/to/init_file.txt> [Optional: <SpB=3> <Init_
   Init_Types: 0 = Homogeneous Initialisation, 1 = Random Speckles, 2 = Burn-In Frames (default 0)
 ```
 
-| Macro | Values | Meaning |
-|---|---|---|
-| `-DSPB=<N>` | `1`, `2`, `3` | Number of biotic species: vegetation only, +grazer, +grazer+predator. Selects which `order_*stocDP_*` driver file to compile against, and which `MultiSPDP_constants_<N>Sp.h` gets pulled in. |
-| `-DINIT=<N>` | `0`, `1`, `2` | Initial condition: `0` = homogeneous frame, `1` = random speckles ("unity"), `2` = burn-in frame read from a file on disk. `0`/`1` require an `order_*stocDP_unity.cpp` driver (which explicitly refuses to build/run with `-DINIT=2`); `2` requires the corresponding `order_*stocDP_burnin.cpp` driver. |
-| `-DARMA` | (flag) | Enables the Armadillo-dependent code paths in `MultiSPDP.h`. Required together with `-DCRITGMM`. |
-| `-DCRITGMM` | (flag) | Enables the embedded-Python GMM-clustering pipeline — see below. Optional; off by default. |
+| Macro | Values | Default if omitted | Meaning |
+|---|---|---|---|
+| `-DSPB=<N>` | `1`, `2`, `3` | `3` (`MultiSPDP.h` falls back to `#define SPB 3` if the macro isn't passed at all) | Number of biotic species: vegetation only, +grazer, +grazer+predator. Selects which `order_*stocDP_*` driver file to compile against, and which `MultiSPDP_constants_<N>Sp.h` gets pulled in. In practice, always pass this explicitly, matching the driver file you're compiling against. |
+| `-DINIT=<N>` | `0`, `1`, `2` | `0` (`#define INIT 0` fallback) | Initial condition: `0` = homogeneous frame, `1` = random speckles ("unity"), `2` = burn-in frame read from a file on disk. `0`/`1` require an `order_*stocDP_unity.cpp` driver (which explicitly refuses to build/run with `-DINIT=2`); `2` requires the corresponding `order_*stocDP_burnin.cpp` driver. |
+| `-DARMA` | (flag) | off | Enables the Armadillo-dependent code paths in `MultiSPDP.h`. Required together with `-DCRITGMM`. |
+| `-DCRITGMM` | (flag) | off | Enables the embedded-Python GMM-clustering pipeline — see below. |
+| `-DBARRACUDA` | (flag) | off | Enables the CUDA code paths in `MultiSPDP.h`/`multiSPDP.cpp` (gated together with `__CUDACC__`), for use alongside an `nvcc` build of `kernel_gamma_vel_sampling.cu`. No scheduling script here drives this, but it has been compiled and run manually to a limited degree — treat this path as a starting point, not a fully verified recipe. |
+| `-DDEBUG` | (flag) | off | Enables verbose per-timestep diagnostic `cout`/`cerr` prints throughout `multiSPDP.cpp` (periodic status updates on vegetation/gamma state), **and** a safety check on every gamma value: if a computed `gamma[s][i]` is NaN or Inf, the current state is saved to an `ERROR_GAMMA_*.csv` frame and the process calls `exit(4)`. Without `-DDEBUG`, a NaN/Inf gamma value is only logged, not caught or saved. |
+| `-DDEBUG_CUDA` | (flag) | off | Additional debug prints inside `kernel_gamma_vel_sampling.cu` only — relevant only alongside `-DBARRACUDA`/`nvcc`. |
+| `-DNSTOC` | (flag) | off | Skips the Dornic stochastic-integration step entirely (`Rho_dt[s][i] = DRho[s][i]` directly), i.e. runs the model **deterministically**. No scheduling script here sets it — compile manually if you need a non-stochastic run. |
+| `-DSTATICVEG` | (flag) | off | Freezes the vegetation-density equation (`dP/dt = 0`) and, like `-DNSTOC`, also skips Dornic integration for that field — use this to study grazer/predator dynamics against a fixed vegetation background. Not driven by any scheduling script; compile manually. |
 
 ### 1-species (vegetation only)
 
@@ -196,7 +192,4 @@ One line = one job.
   # <init_file.txt> <job_name> <SPB> [Init_Type=0] [cpus_per_task] [num_jobs]
   ```
   Check the generated `<job_name>_array.sh` before submitting — the FFTW3 library path, SLURM partition,
-  memory/time limits, and notification email are hardcoded in the script template (the email is a
-  placeholder, `xXx@uni.gov`) and need updating for your account/cluster.
-- **`midnight_screening_DDM.bash`** — do not use: it's a stale leftover copy from `Rietkerk_FD` referencing
-  files (`rietkerk_bjork_basic-DDM.cpp`, `order_3DDMstoc_test_rietkerk.cpp`) that don't exist in this directory.
+  memory/time limits, and notification email are hardcoded in the script template (the email is a placeholder, `xXx@uni.gov`) and need updating for your account/cluster.

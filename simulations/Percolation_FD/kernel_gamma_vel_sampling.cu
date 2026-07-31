@@ -215,14 +215,21 @@ void calc_gamma_vel_NonRefugia_CUDA(int2* d_origin_Neighbourhood, double* d_Rho_
     #endif
 
 	// Next calculate and transfer effective nR_Perp sizes to d_eff_sizes.
+	// NOTE: d_eff_sizes MUST be indexed the same way as d_r_frac (i.e. by sorted position fr_idx, not by
+	// absolute species number s) -- the kernel looks up `d_eff_sizes[sp_idx]` using the same sp_idx it uses
+	// to read `d_r_frac[sp_idx]`. rfrac/d_r_frac is sorted in descending order of perception-radius fraction
+	// (see the `sort(r_frac.begin(), r_frac.end(), ...)` call in multiSPDP.cpp), so species number and sorted
+	// position generally differ. Indexing eff_nR_sizes by species number `s` here (as before) silently handed
+	// the kernel the wrong effective neighbourhood size for whichever species didn't happen to sort into its
+	// own species-numbered slot -- in particular the species at sorted position 0 always read back
+	// vegetation's (always-zero) effective size, collapsing its perception neighbourhood to a single site.
 	//int eff_nR_sizes[SpB];
-    vector<int> eff_nR_sizes(SpB); 
+    vector<int> eff_nR_sizes(SpB);
 	//for(const auto& frac: d_rfrac)
     for(int fr_idx=0; fr_idx < SpB; fr_idx++)
 	{
-		int s = rfrac[fr_idx].second;
 		double fr = rfrac[fr_idx].first; //Fraction of perception radius to max radius.
-		eff_nR_sizes[s]= int(fr*fr*nR_Perp_length);
+		eff_nR_sizes[fr_idx] = int(fr*fr*nR_Perp_length);
 	}
 	cudaStatus = cudaMemcpy(d_eff_sizes, eff_nR_sizes.data(), SpB * sizeof(int), cudaMemcpyHostToDevice);
 

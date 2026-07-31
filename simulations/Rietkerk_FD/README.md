@@ -3,18 +3,15 @@
 Finite-difference (Dornic-scheme) stochastic implementation of the Rietkerk vegetation–water dryland
 model, extended to a 1/2/3-species trophic chain (vegetation → grazer → predator). Simulations run on a 2D
 periodic lattice and are integrated in time with a stochastic Runge-Kutta/Dornic scheme, parallelised over
-OpenMP threads (one thread per replicate/rainfall-value combination). Species interaction terms ("gamma",
-the local grazing/predation coupling) are computed on each timestep either directly over a neighbourhood
-(O(N²)) or via a cached FFT convolution (O(N² log N)) using FFTW3, and initial frames can be generated from
-closed-form mean-field-theory expressions parsed at runtime with ExprTk. Each run performs a scan over a
-range of the rainfall control parameter `a`, and writes CSV frames, per-timestep aggregate ("Prelim") data,
-and summary order-parameter statistics to disk.
+OpenMP threads (one thread per replicate/rainfall-value combination). Species interaction terms ("gamma" (γ), the probability of local non-directional dispersal) are computed each timestep either directly over the perception neighbourhood area Ω  (O(N²*Ω)) or via a cached FFT convolution (O(N² log Ω)) using FFTW3, and initial frames can be generated from closed-form mean-field-theory expressions parsed at runtime with ExprTk. Each run performs a scan over a range of the rainfall control parameter `a`, and writes CSV frames, per-timestep aggregate ("Prelim") data, and summary order-parameter statistics to disk.
 
 This document covers the two core implementation files — `rietkerk_bjork_basic.cpp`/`.h` and the
 `order_*_unity_rietkerk.cpp`/`order_*_burnin_rietkerk.cpp` drivers that link against them — and how to
 compile and run them. The directory also contains a number of variant/scratch files (a locust
-wind-dispersal extension, a density-dependent-mortality variant, older test drivers, deprecated
-implementations, a CUDA kernel) that are not covered here; consult those files directly if you need them.
+wind-dispersal extension, a density-dependent-mortality variant, older test drivers, a CUDA kernel) that are
+not covered here; consult those files directly if you need them. Superseded implementations
+(`rietkerk_berserk_basic.h/.cpp`, `oldrietkerk_bjork_basic.cpp`, `deprecated_functions.cpp`) have been moved
+to `Deprecated_Assets/` and are out of scope entirely.
 
 For the repository-wide picture (data-output conventions, how this fits with `Percolation_FD`,
 `Rietkerk_FPE`, and the `Utilities`/`Data_Processing` post-processing scripts), see the top-level
@@ -64,10 +61,14 @@ Usage: twilight_screening.bash <Path/to/init_file.txt> [Optional: <SpB> <Init_Ty
   Init_Types: 1 = Random MFT-Based Speckles, 2 = Burn-in Frames read from file, 0 = Homogeneous MFT Frames
 ```
 
-| Macro | Values | Meaning |
-|---|---|---|
-| `-DSPB=<N>` | `1`, `2`, `3` | Number of biotic species: vegetation only, +grazer, +grazer+predator. Selects which `order_*` driver file to compile against, and which `rietkerk_bjork_constants_<N>Sp.h` gets pulled in. |
-| `-DINIT=<N>` | `0`, `1`, `2` | Initial condition: `0` = homogeneous mean-field-theory frame, `1` = random MFT-based speckles ("unity"), `2` = burn-in frame read from a file on disk. `0`/`1` require an `order_*stoc_unity_rietkerk.cpp` driver; `2` requires the corresponding `order_*stoc_burnin_rietkerk.cpp` driver. |
+| Macro | Values | Default if omitted | Meaning |
+|---|---|---|---|
+| `-DSPB=<N>` | `1`, `2`, `3` | `3` (`rietkerk_bjork_basic.h` falls back to `#define SPB 3` if omitted) | Number of biotic species: vegetation only, +grazer, +grazer+predator. Selects which `order_*` driver file to compile against, and which `rietkerk_bjork_constants_<N>Sp.h` gets pulled in. In practice, always pass this explicitly, matching the driver file you're compiling against. |
+| `-DINIT=<N>` | `0`, `1`, `2` | `1` (`#define INIT 1` fallback) | Initial condition: `0` = homogeneous mean-field-theory frame, `1` = random MFT-based speckles ("unity"), `2` = burn-in frame read from a file on disk. `0`/`1` require an `order_*stoc_unity_rietkerk.cpp` driver; `2` requires the corresponding `order_*stoc_burnin_rietkerk.cpp` driver. |
+| `-DLOCUST_WIND` | (flag) | off | Required when compiling any `locust_order_*` driver — those drivers check for this macro at runtime and abort with an error if it isn't set. Enables the wind-driven locust-dispersal code path in `rietkerk_locust_case.h`. |
+| `-DBARRACUDA` | (flag) | off | Enables the CUDA code paths in `rietkerk_bjork_basic.h`/`.cpp` (gated together with `__CUDACC__`), for use alongside an `nvcc` build of `kernel_gamma_vel_sampling.cu`. No scheduling script here drives this — unlike `Rietkerk_FPE`, this path hasn't been exercised via any script in this directory; treat it as an unverified starting point. |
+| `-DDEBUG` | (flag) | off | Enables verbose per-timestep diagnostic `cout`/`cerr` prints throughout `rietkerk_bjork_basic.cpp` (periodic status updates on vegetation/gamma state), plus a safety check on every gamma value: if a computed `gamma` value is NaN or Inf, the current state is saved to an `ERROR_GAMMA_*.csv` frame before the process exits. Without `-DDEBUG`, a NaN/Inf gamma value is only logged, not caught or saved. |
+| `-DDEBUG_CUDA` | (flag) | off | Additional debug prints inside the CUDA kernel file only — relevant only alongside `-DBARRACUDA`/`nvcc`. |
 
 ### 1-species (vegetation only)
 

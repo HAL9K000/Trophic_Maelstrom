@@ -1,24 +1,22 @@
 # Utilities
 
-A CPU/GPU-agnostic Python data-analysis pipeline for post-processing raw simulation output from the C++
-models (`../Rietkerk_FD`, `../Rietkerk_FPE`, `../Percolation_FD`). The C++ simulators write large numbers of
-per-replicate CSV files into deep, ad hoc directory trees under `../Data/`; this pipeline reorganises them
-into a predictable, analysis-ready structure and then runs a battery of spatial and temporal statistics over
-them — replicate-averaging, spatial pattern (cluster/FFT/potential-well) analysis, and spatio-temporal
-synchrony analysis between snapshots.
+A CPU/GPU-agnostic Python (plus a Bash/`rsync`/`expect` component) data pipeline for collating and
+post-processing raw simulation output from the C++ models (`../Rietkerk_FD`, `../Rietkerk_FPE`, `../Percolation_FD`). Simulations are frequently run across several remote machines/HPC clusters, so this layer's job starts before reorganisation even begins: `dreamcatcher_automata.bash` can `rsync` each remote device's raw output back to a single host (see [Batch orchestration](#batch-orchestration-dreamcatcher_automatabash)
+below), which then get reorganised by the same pipeline into a predictable, analysis-ready structure, with a battery of spatial and temporal statistics computed over them along the way — replicate-averaging, spatial pattern (cluster/FFT/potential-well) analysis, and spatio-temporal synchrony analysis between snapshots.
 
 The two scripts that matter most are **`reorganise_dir.py`** (per-cell "Frame" snapshots) and
 **`reorganise_prelims_dir.py`** (aggregate "Prelims" time series) — this document is built around them. Both
 import their actual numerical machinery from **`glow_up.py`** (`from glow_up import *`), which in turn routes
 its array operations through **`slick.py`**, a thin CPU/GPU abstraction layer. This document also covers
-**`synthetic_clump_generator.py`** (synthetic initial-condition frame generation) and **`gmm_classifier.py`**
-(the Python side of the live C++↔Python GMM-clustering bridge used by `Percolation_FD`), and the two batch
-orchestration scripts, **`dreamcatcher_automata.bash`** and **`prelims_automata.bash`**.
+**`synthetic_clump_generator.py`** (synthetic initial-condition frame generation), **`gmm_classifier.py`**
+(the Python side of the live C++↔Python GMM-clustering bridge used by `Percolation_FD`), and the batch
+orchestration script **`dreamcatcher_automata.bash`** (which in turn uses **`expect_commands.sh`** for the
+`rsync`-based remote-device collation step).
 
-Everything else in this directory (`legacy_*.py`, `deprecated_functions.py`, `LegacyUtils/`, `test.ipynb`,
-`CPU_fallback_legacy.py`, `scient_literal_rename.py`, `simple_dir_rename.py`, `zipper_merge.bash`,
-`expect_commands.sh`, `*_LOG*.txt`) is superseded, deprecated, or a minor one-off helper, and is out of scope
-here.
+Everything else in this directory has been consolidated out of the way and is out of scope for this
+document: `LegacyUtils/` (`legacy_glow_up.py`, `legacy_reorganise_dir.py`, `legacy_reorganise_prelims_dir.py`,
+`CPU_fallback_legacy.py`), `Deprecated_Assets/` (`deprecated_functions.py`, and the now-deprecated
+`prelims_automata.bash` — see [Batch orchestration](#batch-orchestration-dreamcatcher_automatabash) below), `DirRenamingUtils/` (`scient_literal_rename.py`, `simple_dir_rename.py`), plus `zipper_merge.bash`.
 
 For the repository-wide picture (how this fits with the C++ simulators and `Data_Processing/`), see the top-level `simulations` README.
 
@@ -33,6 +31,8 @@ For the repository-wide picture (how this fits with the C++ simulators and `Data
   CPU](#gpu-vs-cpu-when-to-use---gpu)) — entirely optional, everything degrades gracefully to NumPy/SciPy if
   `cupy` isn't importable or `USE_GPU`/`--gpu` isn't set.
 - `7z` (`p7zip`), only if using `dreamcatcher_automata.bash`'s compression step.
+- `rsync` and `expect`, only if using `dreamcatcher_automata.bash`'s remote-device data-collation step (see
+  below) — `expect` in particular is required by `expect_commands.sh`, which drives the `rsync` calls.
 
 Both `reorganise_dir.py --help` and `reorganise_prelims_dir.py --help` will print argparse's own
 authoritative, live description of every flag — run that whenever this document and the script's actual
@@ -108,12 +108,12 @@ read these back rather than re-deriving them from disk listings every time.
 ## `reorganise_dir.py`
 
 ```
-python3.11 reorganise_dir.py [--dynamic] [--gpu] [--CPUCores N] [--prefixes P [P ...]]
+python3.XX reorganise_dir.py [--dynamic] [--gpu] [--CPUCores N] [--prefixes P [P ...]]
                               [--indir DIR] [--outdir DIR] [--dP N]
                               [--Geq VAL|NA] [--Veq VAL|NA] [--L N [N ...]]
                               [--indx_vals_t N] [--tmin N] [--tmax N]
 ```
-Run `python3.11 reorganise_dir.py --help` for argparse's own descriptions. Key flags:
+Run `python3.XX reorganise_dir.py --help` for argparse's own descriptions. Key flags:
 
 | Flag | Meaning |
 |---|---|
@@ -224,12 +224,12 @@ Structurally the Prelims analogue of `reorganise_dir.py` — same subdirectory d
 and manifest-file bookkeeping in `main()` — but with two differences:
 
 ```
-python3.11 reorganise_prelims_dir.py [--default] [--dynamic] [--CPUCores N] [--prefixes P [P ...]]
+python3.XX reorganise_prelims_dir.py [--default] [--dynamic] [--CPUCores N] [--prefixes P [P ...]]
                                       [--indir DIR] [--outdir DIR] [--dP N]
                                       [--Geq VAL|NA] [--Veq VAL|NA] [--L N [N ...]]
                                       [--indx_vals_t N] [--dt FLOAT]
 ```
-Run `python3.11 reorganise_prelims_dir.py --help` for the live, authoritative flag list.
+Run `python3.XX reorganise_prelims_dir.py --help` for the live, authoritative flag list.
 
 1. There is an additional required-in-practice flag, **`--dt`**, since Prelims time series need a known
    sampling interval to be resampled/aligned (`gen_MEAN_INDVL_Prelimsfiledata(..., dt=dt, handle_nonstandardtime_fileconflicts="interpolate")`
@@ -244,7 +244,7 @@ Run `python3.11 reorganise_prelims_dir.py --help` for the live, authoritative fl
    manifests. Both `main()` and `post_process()` run unconditionally from `__main__` (unlike
    `reorganise_dir.py`, nothing here needs manually uncommenting to run by default).
 
-## Batch orchestration (`dreamcatcher_automata.bash`, `prelims_automata.bash`)
+## Batch orchestration (`dreamcatcher_automata.bash`)
 
 For running the same reorganisation+post-processing pipeline over many `(indir, outdir, dP, Geq/Veq, L,
 prefixes, ...)` combinations without hand-invoking Python repeatedly, `Automata_Inputs/` holds sample input
@@ -260,9 +260,26 @@ files where **each line is a literal argparse flag string**, e.g.:
 ```
 For `stop_iter` iterations, spaced `time_gap_hours` apart:
 
-1. (Optional) runs any commands listed in `optionalcommands.txt` — supports `rsync`/`ssh`-style commands
-   with a following stdin-input line, e.g. for staging fresh data in from a remote HPC cluster before
-   reorganising it.
+1. **(Optional) collate raw output from remote devices.** If an `optionalcommands.txt` file is passed,
+   `dreamcatcher_automata.bash` sources `expect_commands.sh` and calls its `execute_commands()` function on
+   that file at the start of every iteration. The file is a flat list of `#CMD`/`#INPUT` pairs — one shell
+   command per `#CMD` line (in practice, an `rsync` pulling a remote host's `simulations/Data/` tree down into
+   a local subdirectory), followed by an `#INPUT` line giving the text to auto-supply if that command prompts
+   for input (e.g. an SSH password/passphrase). `execute_commands()` turns each pair into a small
+   auto-generated `expect` script (`spawn <command>; expect "*password*" { send "<input>\r" }`) and runs it,
+   so a whole batch of remote `rsync` pulls can run unattended. Sample file,
+   `Automata_Inputs/addn_commands.txt`:
+   ```
+   #CMD
+   rsync -trlpzv <remotedir1> <localdir1>
+   #INPUT
+   <placeholder if using key-based auth with none needed>
+   #CMD
+   rsync -trlpzv --exclude-from='Automata_Inputs/addn_comm_exclude.txt' <remotedir2> <localdir2>
+   #INPUT
+   <placeholder if using key-based auth with none needed>
+   ```
+   This is the step that turns "one dataset per remote HPC cluster/device into "one local `Data/` tree", before any of the reorganisation below runs against it. While possible, storing real SSH credentials in a plaintext `#INPUT` line is **strongly discouraged**, and prefer key-based auth with an empty/placeholder `#INPUT` where possible.
 2. Reads `in_reorganise_dir.txt` **line by line**; for each line, if the line's `--outdir` already exists
    it's renamed aside with an `HHMM` timestamp suffix (so a repeated run never silently merges into old
    output), then runs `python3.11 reorganise_dir.py <that line> [--CPUCores ncores]` — the entire line,
@@ -276,29 +293,13 @@ line-level parallelism inside this script itself.
 
 #### GPU oversubscription warning
 
-**Do not use `dreamcatcher_automata.bash` to batch-run GPU-flagged (`--gpu`) synchrony analysis.** Inside a
-single `reorganise_dir.py --gpu --CPUCores N` invocation, `unified_post_process` spins up an `N`-worker
-Dask/joblib pool, and — per `slick.py`'s `setup_daskworker_gpu_context()` — **every one of those N workers
-binds to the same physical device, `cupy.cuda.Device(0)`**, with no device round-robin or per-worker memory
-partitioning. Because `dreamcatcher_automata.bash` passes `--gpu` through verbatim from whatever's in the
-input file, an input file with multiple GPU-flagged lines (run one after another) is comparatively safe since
-they're sequential — but if you run several `dreamcatcher_automata.bash` instances concurrently (e.g. in
-separate `tmux` panes), or set `--CPUCores` high on a GPU-flagged line, you will stack many concurrent CUDA
-contexts onto one GPU with no scheduling safeguard anywhere in this pipeline. For GPU-accelerated synchrony
-analysis, invoke `reorganise_dir.py --gpu` directly and manage GPU concurrency yourself (one job per GPU at a
-time); reserve `dreamcatcher_automata.bash` for CPU-only batch runs, or for GPU runs where you've confirmed
-only one `--gpu` invocation will ever be in flight at once.
+> **WARNING: ⚠️⚠️ Do not use `dreamcatcher_automata.bash` to batch-run GPU-flagged (`--gpu`) synchrony analysis.** 
+> Inside a single `reorganise_dir.py --gpu --CPUCores N` invocation, `unified_post_process` spins up an `N`-worker Dask/joblib pool, and — per `slick.py`'s `setup_daskworker_gpu_context()` — **every one of those N workers binds to the same physical device, `cupy.cuda.Device(0)`**, with no device round-robin or per-worker memory partitioning. Because `dreamcatcher_automata.bash` passes `--gpu` through verbatim from whatever's in the input file, an input file with multiple GPU-flagged lines (run one after another) is comparatively safe since they're sequential — but if you run several `dreamcatcher_automata.bash` instances concurrently (e.g. in separate `tmux` panes), or set `--CPUCores` high on a GPU-flagged line, you will stack many concurrent CUDA contexts onto one GPU with no scheduling safeguard anywhere in this pipeline. For GPU-accelerated synchrony analysis, invoke `reorganise_dir.py --gpu` directly and manage GPU concurrency yourself (one job per GPU at a time); reserve `dreamcatcher_automata.bash` for CPU-only batch runs, or for GPU runs where you've confirmed only one `--gpu` invocation will ever be in flight at once.
 
-### `prelims_automata.bash`
+### `prelims_automata.bash` (deprecated)
 
-```
-./prelims_automata.bash <in_reorganise_prelims_dir.txt>
-```
-A much thinner, single-pass batch runner: reads the input file line by line and runs
-`python3.11 reorganise_prelims_dir.py <that line>` for each, logging failures to `error_log.txt`. Unlike
-`dreamcatcher_automata.bash` it does **not** create/rename output directories, does not iterate, does not
-compress output, and does not support the optional-commands or `--CPUCores` pass-through — treat it as a
-minimal one-shot Prelims runner, not a full replacement for `dreamcatcher_automata.bash`.
+The earlier, much thinner single-pass Prelims-only batch runner has been retired to `Deprecated_Assets/` — `dreamcatcher_automata.bash` above is now the one script for both Frames and Prelims batch runs (with
+iteration, output-directory collision handling, compression, and remote-device collation that the older script never had).
 
 ## `synthetic_clump_generator.py` and the `Input/` file format
 
@@ -328,7 +329,7 @@ conversion step.
 
 ## `gmm_classifier.py` — CPython/NumPy C API bridge
 
-Not a standalone script — it's imported live by the C++ simulation code (`Percolation_FD/py_GMM_embedder-ref.hpp`,
+Not a standalone script — it's imported live by the C++ simulation code (`Percolation_FD/py_GMM_embedder.hpp`,
 active under `-DCRITGMM` builds; see `../Percolation_FD/README.md`) via an embedded CPython interpreter, so
 that spatial clustering statistics can be computed **in-memory, during a running simulation**, without a
 round-trip through disk. It's deliberately dependency-light — only `numpy`, `sklearn.mixture.GaussianMixture`,
@@ -346,5 +347,4 @@ For internal reference: this is algorithmically **the same routine as `gen_clust
 max, fit a `GaussianMixture`, reorder labels so cluster 0 is the lowest-mean class, binarize, then run
 `scipy.ndimage.label` with an explicit periodic-boundary label-stitching pass (merging clusters that wrap
 across the grid edges) to get final connected-component clusters — just reimplemented standalone (no
-`glow_up`/`slick` import) so it can run inside an embedded interpreter with a minimal dependency footprint,
-against in-memory C++ arrays instead of CSV files on disk.
+`glow_up`/`slick` import) so it can run inside an embedded interpreter with a minimal dependency footprint, against in-memory C++ arrays instead of CSV files on disk.

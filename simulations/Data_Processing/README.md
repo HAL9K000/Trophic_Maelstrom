@@ -6,8 +6,8 @@ raw C++ output and computes per-directory summary statistics (means/std, FFT pow
 potential wells, spatio-temporal synchrony), this directory turns that reorganised data and those derived
 statistics into heatmap images, videos, and summary plots.
 
-The active script here is **`frame_builder.py`**. `deprecated_unsupervised_clustering.py` is, per its own
-name, deprecated and out of scope for this document.
+The active script here is **`frame_builder.py`**. `Deprecated_Assets/deprecated_unsupervised_clustering.py`
+is, per its own name and location, deprecated and out of scope for this document.
 
 ## Dependencies
 

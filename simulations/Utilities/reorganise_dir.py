@@ -1231,8 +1231,8 @@ end_time_CPU = None
 if __name__ == "__main__":
     main()
     #post_process(prefixes) # OLD, IGNORE
-    unified_post_process(prefixes, "FRAME", ncores= CPU_Ncores, tmin=80000, tmax = 200000)
-    unified_post_process(prefixes, "GAMMA", ncores= CPU_Ncores, tmin=70000)
+    unified_post_process(prefixes, "FRAME", ncores= CPU_Ncores)#, tmin=80000, tmax = 200000)
+    unified_post_process(prefixes, "GAMMA", ncores= CPU_Ncores)#, tmin=70000)
     #post_process_gamma(prefixes)  # OLD, IGNORE
     #post_imgprocess(prefixes= prefixes, Trange=[82000.1, 84000, 86000, 88000, 90000, 92000, 94000, 96000, 98000, 100000], largest_T_only= True)
     #post_imgprocess(prefixes= prefixes, Trange=[0, 6000], largest_T_only= True)

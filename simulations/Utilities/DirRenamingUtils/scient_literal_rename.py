@@ -43,7 +43,7 @@ def process_directory(directory_path, scale_factor):
 
 if __name__ == "__main__":
     # Input: Directory path and scale factor
-    directory_path = "../Data/DP/Prelims/Stochastic/2Sp/"
+    directory_path = "../../Data/DP/Prelims/Stochastic/2Sp/"
     scale_factor = float(input("Enter the scaling factor (e.g., 1000): "))
 
     if os.path.isdir(directory_path):

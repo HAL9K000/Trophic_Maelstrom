@@ -1,12 +1,8 @@
 # Rietkerk_FPE Documentation
 
-Fokker-Planck-equation (FPE) variant of the Rietkerk vegetation-water dryland model (see `../Rietkerk_FD`
-for the base finite-difference model this extends). Instead of treating dispersal as plain diffusion, this
-variant adds an advection-diffusion step for the population density fields, computed either numerically on the GPU via a dedicated CUDA kernel, or analytically on the CPU via precomputed Gaussian stencils, to capture directional/velocity-biased movement. Simulations run on a 2D periodic lattice, parallelised over OpenMP threads, with the same species-interaction ("gamma") and stochastic-integration machinery as
-`Rietkerk_FD`. Each run scans a range of the rainfall control parameter `a` and writes CSV frames,
-per-timestep aggregate ("Prelim") data, and summary order-parameter statistics to disk.
+Fokker-Planck-equation (FPE) variant of the Rietkerk vegetation-water dryland model (see `../Rietkerk_FD` for the base finite-difference model this extends). Instead of treating dispersal as plain diffusion, this variant adds an advection-diffusion step for the population density fields, computed either numerically on the GPU via a dedicated CUDA kernel, or analytically on the CPU via precomputed Gaussian stencils, to capture directional/velocity-biased movement. Simulations run on a 2D periodic lattice, parallelised over OpenMP threads, with the same consumer movement switching behaviour ("gamma") and stochastic-integration machinery as `Rietkerk_FD`. Each run scans a range of the rainfall control parameter `a` and writes CSV frames, per-timestep aggregate ("Prelim") data, and summary order-parameter statistics to disk.
 
-> **Testing status:** only the **CUDA path** (`kernel_advdiff_FKE2D.cu`, `-DBARRACUDA` builds) has been
+> **Testing status: ⚠️⚠️ ** Only the **CUDA path** (`kernel_advdiff_FKE2D.cu`, `-DBARRACUDA` builds) has been
 > rigorously tested and validated. The CPU-only path (compiling without `-DBARRACUDA`, which falls back to
 > the analytic Gaussian-stencil integration in `rietkerk_bjork_basic.h`) is more experimental, has seen far
 > less validation, and may contain bugs. Use the CUDA build for anything beyond quick local exploration, and
@@ -19,8 +15,7 @@ density-dependent-mortality variant, older test drivers, and sample burn-in fram
 here.
 
 For the repository-wide picture (data-output conventions, how this fits with `Rietkerk_FD`, `Percolation_FD`,
-and the `Utilities`/`Data_Processing` post-processing scripts), see the top-level `simulations` README and
-`/CLAUDE.md`.
+and the `Utilities`/`Data_Processing` post-processing scripts), see the top-level `simulations` README`.
 
 ## Dependencies
 
@@ -77,12 +72,13 @@ Usage: twilight_screening_FPE-CUDA.bash <Path/to/init_file.txt> [Optional: <SpB>
   ARCH-SM:       CUDA virtual architecture / streaming multiprocessor (default: left to nvcc)
 ```
 
-| Macro | Values | Meaning |
-|---|---|---|
-| `-DSPB=<N>` | `2`, `3` | Number of biotic species. Selects which `order_*` driver file to compile against, and which `rietkerk_bjork_constants_<N>Sp.h` gets pulled in. |
-| `-DINIT=<N>` | `0`, `1`, `2` | Initial condition: `0` = homogeneous, `1` = random speckles ("unity"), `2` = burn-in frame read from a file on disk. `0`/`1` require an `order_*stoc_unity_rietkerk.cpp` driver; `2` requires the corresponding `order_*stoc_burnin_rietkerk.cpp` driver. |
-| `-DMV_INVARIANCE=<N>` | `0`, `1` | Movement-invariance type for the FKE step: `0` = distance-invariant, `1` = velocity-invariant. Defaults to `0` if not defined. |
-| `-DBARRACUDA` | (flag) | **Enables the validated CUDA/GPU advection-diffusion path.** Requires linking against a compiled `kernel_advdiff_FKE2D.cu` object and the CUDA runtime. Omitting it falls back to the less-tested CPU-only analytic path. |
+| Macro | Values | Default if omitted | Meaning |
+|---|---|---|---|
+| `-DSPB=<N>` | `2`, `3` | `3` (`rietkerk_bjork_basic.h` falls back to `#define SPB 3` if omitted) | Number of biotic species. Selects which `order_*` driver file to compile against, and which `rietkerk_bjork_constants_<N>Sp.h` gets pulled in. In practice, always pass this explicitly, matching the driver file you're compiling against. |
+| `-DINIT=<N>` | `0`, `1`, `2` | `1` (`#define INIT 1` fallback) | Initial condition: `0` = homogeneous, `1` = random speckles ("unity"), `2` = burn-in frame read from a file on disk. `0`/`1` require an `order_*stoc_unity_rietkerk.cpp` driver; `2` requires the corresponding `order_*stoc_burnin_rietkerk.cpp` driver. |
+| `-DMV_INVARIANCE=<N>` | `0`, `1` | `0` (`#define MV_INVARIANCE 0` fallback) | Movement-invariance type for the FKE step: `0` = distance-invariant, `1` = velocity-invariant. |
+| `-DBARRACUDA` | (flag) | off | **Enables the validated CUDA/GPU advection-diffusion path.** Requires linking against a compiled `kernel_advdiff_FKE2D.cu` object and the CUDA runtime. Omitting it falls back to the less-tested CPU-only analytic path. |
+| `-DDEBUG` | (flag) | off | Enables verbose per-timestep diagnostic `cout`/`cerr` prints throughout `rietkerk_bjork_FKE.cpp` (status updates before/after the advection-diffusion step, `Rho_dt` and gamma sanity checks), plus a safety check on every gamma value: if a computed `gamma` value is NaN or Inf, the current state is saved to an `ERROR_GAMMA_*.csv` frame before the process exits. Without `-DDEBUG`, a NaN/Inf gamma value is only logged, not caught or saved. |
 
 ### CUDA build (recommended — the tested path)
 
