@@ -26,6 +26,7 @@ simulations/Utilities/test.ipynb
 *.json
 *midnight_screening*.bash
 !architecture_flowchart.png
+!pip3-requirements.txt
 !MSThesisFigures/NPDPSchema.png
 !MSThesisFigures/TCPSchema.png
 !MSThesisFigures/DensityTable.png

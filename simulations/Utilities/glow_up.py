@@ -2290,7 +2290,8 @@ def gen_2DCorr_data(files, T, matchT=[], crossfiles=[], pathtodir="", ext="csv",
         # Each dask worker gets single thread with its own CUDA context!
         print(f"Using Dask LocalCluster with {ncores} workers and 1 thread per worker, with {mem_limit} memory limit per worker.")
         if gpu.GPU_AVAILABLE:
-            daskclient.register_worker_plugin(gpu.setup_daskworker_gpu_context)
+            #daskclient.register_worker_plugin(gpu.setup_daskworker_gpu_context(policy='least-busy'))
+            daskclient.run(gpu.setup_daskworker_gpu_context, policy='least-busy')
         # Assigns local CUDA context to each worker.
         joblib_backend = 'dask'
         print("Dashboard URL: ", daskclient.dashboard_link)
@@ -2326,36 +2327,37 @@ def gen_2DCorr_data(files, T, matchT=[], crossfiles=[], pathtodir="", ext="csv",
         #with joblib.Parallel(n_jobs=ncores, backend=joblib_backend) as parallel:
         #    results = parallel(joblib.delayed(worker_func)(tval) for tval in matchT)
         # End of parallel processing
+        try:
+            # Execute parallel processing with specified backend
+            with parallel_backend(joblib_backend, n_jobs=ncores):
+                results = Parallel(
+                    batch_size="auto",
+                    verbose=10 if True else 0 #verbose else 0  # Joblib verbosity
+                )([
+                        delayed(process_time_value_joblib_wrapper)(
+                        tval, files, T, crossfiles, L, col_labels, ext,
+                        exclude_col_labels, calc_AMI, calc_MI, calc_Morans, bins, verbose,
+                        worker_id=i % ncores if ncores > 0 else 0
+                        ) for i, tval in enumerate(matchT)
+                ])
+            # End of parallel processing
+        finally:
+            #If Dask client is used, unregister the worker plugin
+            if gpu.DASK_AVAILABLE and daskclient is not None:
+                # Wait for all tasks to complete
+                daskclient.run(lambda: None)  # Synchronization point
+                #daskclient.run_on_workers(lambda: None)  # Synchronization point
+                #daskclient.unregister_worker_plugin(gpu.setup_daskworker_gpu_context(policy='least-busy'))
+                daskclient.close()
+                print("Dask client closed and worker plugin unregistered.")
 
-        # Execute parallel processing with specified backend
-        with parallel_backend(joblib_backend, n_jobs=ncores):
-            results = Parallel(
-                batch_size="auto",
-                verbose=10 if True else 0 #verbose else 0  # Joblib verbosity
-            )([
-                    delayed(process_time_value_joblib_wrapper)(
-                    tval, files, T, crossfiles, L, col_labels, ext,
-                    exclude_col_labels, calc_AMI, calc_MI, calc_Morans, bins, verbose,
-                    worker_id=i % ncores if ncores > 0 else 0
-                    ) for i, tval in enumerate(matchT)
-            ])
-        # End of parallel processing
-
-        #If Dask client is used, unregister the worker plugin
-        if gpu.DASK_AVAILABLE and daskclient is not None:
-            # Wait for all tasks to complete
-            daskclient.run_on_workers(lambda: None)  # Synchronization point
-            #daskclient.unregister_worker_plugin(gpu.setup_daskworker_gpu_context)
-            daskclient.close()
-            print("Dask client closed and worker plugin unregistered.")
-
-        # Try removing pysal_cache if it exists
-        if os.path.exists(pysal_cache_dir):
-            try:
-                shutil.rmtree(pysal_cache_dir)
-                print(f"Removed pysal cache directory: {pysal_cache_dir}")
-            except Exception as e:
-                print(f"Error removing pysal cache directory {pysal_cache_dir}: {e}")
+            # Try removing pysal_cache if it exists
+            if os.path.exists(pysal_cache_dir):
+                try:
+                    shutil.rmtree(pysal_cache_dir)
+                    print(f"Removed pysal cache directory: {pysal_cache_dir}")
+                except Exception as e:
+                    print(f"Error removing pysal cache directory {pysal_cache_dir}: {e}")
 
         # Collect and merge results from all processes
         for result in results:

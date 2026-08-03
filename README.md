@@ -32,7 +32,7 @@ All three write raw per-replicate CSV output into an ad hoc directory tree under
 ### 2. Python/Bash reorganisation & analysis layer
 
 **[`simulations/Utilities/`](simulations/Utilities/README.md)** turns that raw C++ output across different devices (requires rsync) into a predictable, analysis-ready directory structure and computes a battery of spatial/temporal statistics over it, all
-CPU/GPU-agnostic ✅ (`slick.py` routes numerics through `cupy` when available, `numpy` otherwise). Functionality
+CPU/GPU-agnostic ✅ ([`slick.py`](https://github.com/HAL9K000/slick) routes numerics through `cupy` when available, `numpy` otherwise). Functionality
 provided:
 
 - **Reorganisation**: copies and renames raw per-replicate CSV files (`reorganise_dir.py` for Frame

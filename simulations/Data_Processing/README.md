@@ -11,7 +11,11 @@ is, per its own name and location, deprecated and out of scope for this document
 
 ## Dependencies
 
-- Python 3.10+ (developed/tested against the `$HOME/dask_py3.11env` virtualenv, which has every dependency
+**Setting up dependencies.** `../../environment.yml`, `../../pip3-requirements.txt` cover this layer
+alongside `Utilities/` in one shared environment -- see the setup commands (pip venv or conda, both
+named `trophic-maelstrom`) at the top of [`Utilities/README.md`](simulations/Utilities/README.md)'s Dependencies section.
+
+- Python 3.10+ (Developed/tested against a pip3 virtualenv, which has every dependency
   below already installed)
 - `numpy`, `pandas`, `scipy`, `regex`, `powerlaw`
 - `matplotlib`, `seaborn`, `adjustText` (plotting)

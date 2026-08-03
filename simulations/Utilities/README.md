@@ -5,10 +5,7 @@ post-processing raw simulation output from the C++ models (`../Rietkerk_FD`, `..
 below), which then get reorganised by the same pipeline into a predictable, analysis-ready structure, with a battery of spatial and temporal statistics computed over them along the way — replicate-averaging, spatial pattern (cluster/FFT/potential-well) analysis, and spatio-temporal synchrony analysis between snapshots.
 
 The two scripts that matter most are **`reorganise_dir.py`** (per-cell "Frame" snapshots) and
-**`reorganise_prelims_dir.py`** (aggregate "Prelims" time series) — this document is built around them. Both
-import their actual numerical machinery from **`glow_up.py`** (`from glow_up import *`), which in turn routes
-its array operations through **`slick.py`**, a thin CPU/GPU abstraction layer. This document also covers
-**`synthetic_clump_generator.py`** (synthetic initial-condition frame generation), **`gmm_classifier.py`**
+**`reorganise_prelims_dir.py`** (aggregate "Prelims" time series) — this document is built around them. Both import their actual numerical machinery from **`glow_up.py`** (`from glow_up import *`), which in turn routes its array operations through **`slick.py`**, [a thin CPU/GPU abstraction layer](https://github.com/HAL9K000/slick). This document also covers **`synthetic_clump_generator.py`** (synthetic initial-condition frame generation), **`gmm_classifier.py`**
 (the Python side of the live C++↔Python GMM-clustering bridge used by `Percolation_FD`), and the batch
 orchestration script **`dreamcatcher_automata.bash`** (which in turn uses **`expect_commands.sh`** for the
 `rsync`-based remote-device collation step).
@@ -21,6 +18,25 @@ document: `LegacyUtils/` (`legacy_glow_up.py`, `legacy_reorganise_dir.py`, `lega
 For the repository-wide picture (how this fits with the C++ simulators and `Data_Processing/`), see the top-level `simulations` README.
 
 ## Dependencies
+
+**Setting up dependencies.** `../environment.yml` and `../pip3-requirements.txt` cover everything
+listed below (both core and optional) for this layer *and* `Data_Processing/`, since the two share
+one environment in practice. Pick whichever of pip or conda you prefer:
+
+- **pip** (venv named `trophic-maelstrom`, matching the convention used elsewhere in this repo):
+  ```bash
+  python3 -m venv ~/trophic-maelstrom
+  source ~/trophic-maelstrom/bin/activate
+  pip3 install --upgrade pip
+  pip3 install -r ../../pip3-requirements.txt
+  ```
+  or automate the above, including CUDA-version detection for GPU support, with
+  `../setup_environment.sh`.
+- **conda/mamba** (environment named `trophic-maelstrom`):
+  ```bash
+  conda env create -n trophic-maelstrom -f ../../environment.yml
+  conda activate trophic-maelstrom
+  ```
 
 - Python 3.10+ (Note that the automation scripts invoke `python3.11` explicitly)
 - `numpy`, `pandas`, `scipy`, `regex`
@@ -205,13 +221,11 @@ second pass, `post_process_df_files` (feeding into `get_1D_HarmonicFreq_Prelimsd
 each of these lag-correlation curves to extract dominant oscillation frequencies/periods and their peaks
 (`maxima_finder="find_peaks"` by default; `"cubic_spline"` is also available for smoother interpolated peak
 localisation), written to `2DCorr/FFT/{FFTSig,HarmonicPeaks}_..._TD_{delay}.csv` — this is how you'd quantify,
-e.g., a periodic predator-prey oscillation's actual period directly from the correlation structure rather than
-eyeballing a time series.
+e.g., a periodic predator-prey oscillation's actual period directly from the correlation structure rather than eyeballing a time series.
 
 ### GPU vs. CPU: when to use `--gpu`
 
-The synchrony analysis above (2D FFT cross-correlation over every timepoint pair, for every column pair, for
-every replicate) is by far the most computationally expensive stage in this pipeline. ⚠️⚠️ **For grid sizes `L>= 256`, running this on a GPU is substantially faster than the CPU-only path** — use `--gpu` whenever you're running `post_imgprocess`/synchrony analysis at these grid sizes on a machine with a usable CUDA GPU and `cupy` installed. Also note, combining the `--gpu` path with `dask` as opposed to `joblib` is **strongly recommended for concurrent CPU-GPU interops on shared GPU resources**, as the former avoids the Python GIL for each CPU thread. For smaller grids, or for the copy/rename and basic per-snapshot statistics stages, the CPU path is generally fine and simpler to reason about (no GPU memory/oversubscription concerns — see the [warning below](#gpu-oversubscription-warning) about combining `--gpu` with batch automation).
+The synchrony analysis above (2D FFT cross-correlation over every timepoint pair, for every column pair, for every replicate) is by far the most computationally expensive stage in this pipeline. ⚠️⚠️ **For grid sizes `L>= 256`, running this on a GPU is substantially faster than the CPU-only path** — use `--gpu` whenever you're running `post_imgprocess`/synchrony analysis at these grid sizes on a machine with a usable CUDA GPU and `cupy` installed. Also note, combining the `--gpu` path with `dask` as opposed to `joblib` is **strongly recommended for concurrent CPU-GPU interops on shared GPU resources**, as the former avoids the Python GIL for each CPU thread. For smaller grids, or for the copy/rename and basic per-snapshot statistics stages, the CPU path is generally fine and simpler to reason about (no GPU memory/oversubscription concerns — see the [warning below](#gpu-oversubscription-warning) about combining `--gpu` with batch automation). For further details on how GPU--CPU interops is achieved, refer to the [slick documentation](https://github.com/HAL9K000/slick). 
 
 ## `reorganise_prelims_dir.py`
 
@@ -288,8 +302,18 @@ line-level parallelism inside this script itself.
 
 #### GPU oversubscription warning
 
-> **WARNING: ⚠️⚠️ Do not use `dreamcatcher_automata.bash` to batch-run GPU-flagged (`--gpu`) synchrony analysis.** 
-> Inside a single `reorganise_dir.py --gpu --CPUCores N` invocation, `unified_post_process` spins up an `N`-worker Dask/joblib pool, and — per `slick.py`'s `setup_daskworker_gpu_context()` — **every one of those N workers binds to the same physical device, `cupy.cuda.Device(0)`**, with no device round-robin or per-worker memory partitioning. Because `dreamcatcher_automata.bash` passes `--gpu` through verbatim from whatever's in the input file, an input file with multiple GPU-flagged lines (run one after another) is comparatively safe since they're sequential — but if you run several `dreamcatcher_automata.bash` instances concurrently (e.g. in separate `tmux` panes), or set `--CPUCores` high on a GPU-flagged line, you will stack many concurrent CUDA contexts onto one GPU with no scheduling safeguard anywhere in this pipeline. For GPU-accelerated synchrony analysis, invoke `reorganise_dir.py --gpu` directly and manage GPU concurrency yourself (one job per GPU at a time); reserve `dreamcatcher_automata.bash` for CPU-only batch runs, or for GPU runs where you've confirmed only one `--gpu` invocation will ever be in flight at once.
+> **WARNING: ⚠️⚠️ Generally avoid using `--gpu` with `dreamcatcher_automata.bash`** for unattended/batch runs.
+> Note `slick.py` supports device-selection policies (round-robin, `least-busy` — picking whichever visible device
+> currently has the most free memory, `explicit`), which is correctly dispatched to every Dask worker via
+> `daskclient.run(gpu.setup_daskworker_gpu_context, policy='least-busy')` in `unified_post_process` and `gen_2DCorr_data`.
+> However, the caution remains because `least-busy` selection is a point-in-time free-memory check, not a lock or
+> reservation — concurrent processes (multiple `dreamcatcher_automata.bash` instances run in separate `tmux`
+> panes, or a GPU-flagged line combined with a high `--CPUCores`) can each independently see the same device
+> as "least busy" and all land on it at once, since nothing in this pipeline coordinates GPU usage *across*
+> separate processes. For GPU-accelerated synchrony analysis, prefer invoking `reorganise_dir.py --gpu`
+> directly, one job per GPU at a time (and 10-20 CPU threads per GPU), so you retain control over what's actually running concurrently;
+> reserve `dreamcatcher_automata.bash` for CPU-only batch runs, or for GPU runs where you've confirmed only
+> one `--gpu` invocation will ever be in flight at once.
 
 ### `prelims_automata.bash` (deprecated)
 

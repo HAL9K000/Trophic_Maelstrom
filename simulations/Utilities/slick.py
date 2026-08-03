@@ -11,6 +11,8 @@ import sys
 import warnings
 import threading
 from functools import wraps
+import itertools
+import zlib
 import importlib
 
 print(f"GPU_GLOW_UP: PID={os.getpid()}, __name__={__name__}, importing...")
@@ -29,6 +31,7 @@ DASK_AVAILABLE = False # Check if Dask distributed is available.
 # Standard CPU imports (always available)
 import numpy as _cpu_np
 import numpy.random as _cpu_nprandom
+import numpy.linalg as _cpu_linalg
 import scipy as _cpu_scipy
 import scipy.fft as _cpu_fft
 import scipy.signal as _cpu_signal
@@ -50,6 +53,7 @@ if USE_CUDA:
 
         import cupy as _cupy
         import cupy.random as _cupy_random
+        import cupy.linalg as _cupy_linalg
         import cupyx.scipy.fft as _gpu_fft
         import cupyx.scipy.signal as _gpu_signal
         import cupyx.scipy.ndimage as _gpu_ndimage
@@ -297,6 +301,7 @@ def cpu_safe_import(module_path):
 # Create smart modules
 if GPU_AVAILABLE:
     numpy = SmartModule(_cpu_np, _cupy, "numpy")
+    linalg = SmartModule(_cpu_linalg, _cupy_linalg, "numpy.linalg")
     fft = SmartModule(_cpu_fft, _gpu_fft, "scipy.fft")
     signal = SmartModule(_cpu_signal, _gpu_signal, "scipy.signal")
     ndimage = SmartModule(_cpu_ndimage, _gpu_ndimage, "scipy.ndimage")
@@ -305,6 +310,7 @@ if GPU_AVAILABLE:
     stats = cpu_safe_import("scipy.stats")
 else:
     numpy = SmartModule(_cpu_np, None, "numpy")
+    linalg = SmartModule(_cpu_linalg, None, "numpy.linalg")
     fft = SmartModule(_cpu_fft, None, "scipy.fft")
     signal = SmartModule(_cpu_signal, None, "scipy.signal")
     ndimage = SmartModule(_cpu_ndimage, None, "scipy.ndimage")
@@ -313,14 +319,199 @@ else:
 
 # Create a numpy alias for convenience
 np = numpy
+la = linalg
+
+# =============================================================================
+# MULTI-GPU DASK WORKER CONTEXTS 🎛️
+# =============================================================================
+# Pinning every worker to Device(0) wastes every card but the first. Slick now
+# spreads workers across the visible devices, with the policy under your control.
+
+_LOCAL_RANK_COUNTER = itertools.count()   # per-process, covers threaded workers
+_WORKER_DEVICE = threading.local()        # remembers this worker's device
+
+
+def visible_devices():
+    """List the CUDA device ids Slick is allowed to use, honouring CUDA_VISIBLE_DEVICES.
+
+    Override with SLICK_GPU_DEVICES="0,2,3" to carve out a subset.
+    """
+    if not GPU_AVAILABLE:
+        return []
+    override = os.getenv("SLICK_GPU_DEVICES", "").strip()
+    if override:
+        try:
+            return [int(d) for d in override.replace(" ", "").split(",") if d != ""]
+        except ValueError:
+            warnings.warn(f"Could not parse SLICK_GPU_DEVICES={override!r} ⚠️ - using all devices.")
+    try:
+        return list(range(_cupy.cuda.runtime.getDeviceCount()))
+    except Exception as e:
+        warnings.warn(f"Could not enumerate CUDA devices: {e} ⚠️ - assuming a single device.")
+        return [0]
+
+
+def worker_rank():
+    """Best-effort stable integer rank for the calling worker/thread.
+
+    Dask workers are separate *processes*, so a naive module-level counter gives
+    every worker rank 0 and round-robin collapses onto one card. We therefore
+    look for real identity first, and only then fall back to a local counter.
+    Cascade: SLICK_WORKER_RANK env -> Dask worker name -> CRC32 of the worker
+    address (stable across runs, unlike PYTHONHASHSEED-salted hash()) -> a
+    per-process counter for threads inside one worker.
+    """
+    env_rank = os.getenv("SLICK_WORKER_RANK")
+    if env_rank is not None:
+        try:
+            return int(env_rank), "SLICK_WORKER_RANK"
+        except ValueError:
+            pass
+    if DASK_AVAILABLE:
+        try:
+            worker = _dask_distributed.get_worker()
+            name = getattr(worker, "name", None)
+            if isinstance(name, int):
+                return name, "dask worker name"
+            if isinstance(name, str) and name.strip().lstrip("-").isdigit():
+                return int(name), "dask worker name"
+            ident = str(name or getattr(worker, "address", "") or worker.id)
+            if ident:
+                return zlib.crc32(ident.encode()), f"crc32({ident})"
+        except (ValueError, AttributeError, ImportError):
+            pass  # Not inside a Dask worker - fine, keep going.
+        except Exception:
+            pass
+    return next(_LOCAL_RANK_COUNTER), "process-local counter"
+
+
+def _least_busy_device(devices):
+    """Pick the visible device with the most free memory right now."""
+    best, best_free = devices[0], -1
+    for dev in devices:
+        try:
+            with _cupy.cuda.Device(dev):
+                free, _total = _cupy.cuda.runtime.memGetInfo()
+        except Exception:
+            continue
+        if free > best_free:
+            best, best_free = dev, free
+    return best
+
+
+def select_cuda_device(policy="round-robin", device=None, devices=None):
+    """Resolve which CUDA device this worker should use. Pure - it selects, it does not bind.
+
+    Parameters
+    ----------
+    policy : {"round-robin", "explicit", "least-busy", "single"} or callable
+        - "round-robin" (default): rank % len(devices), spreading workers evenly.
+        - "explicit": use `device` (int, callable, or {worker_name/rank: device} mapping).
+        - "least-busy": whichever visible device currently has the most free memory.
+        - "single": legacy behaviour, everyone on `device` or device 0.
+        - callable: your own `policy(rank, devices) -> device_id`.
+    device : int | callable | dict, optional
+        User-defined selection. A callable receives `(rank, devices)`.
+    devices : sequence of int, optional
+        Restrict the pool; defaults to :func:`visible_devices`.
+    """
+    pool = list(devices) if devices is not None else visible_devices()
+    if not pool:
+        return None
+    rank, source = worker_rank()
+
+    if callable(policy):
+        chosen = policy(rank, pool)
+    elif callable(device):
+        chosen = device(rank, pool)
+    elif isinstance(device, dict):
+        key = rank if rank in device else str(rank)
+        chosen = device.get(key, pool[rank % len(pool)])
+    elif device is not None and policy in ("explicit", "single"):
+        chosen = device
+    elif policy == "single":
+        chosen = pool[0]
+    elif policy == "least-busy":
+        chosen = _least_busy_device(pool)
+    elif policy == "explicit":
+        warnings.warn("policy='explicit' with no `device` given ⚠️ - falling back to round-robin.")
+        chosen = pool[rank % len(pool)]
+    else:
+        if policy != "round-robin":
+            warnings.warn(f"Unknown device policy {policy!r} ⚠️ - falling back to round-robin.")
+        chosen = pool[rank % len(pool)]
+
+    chosen = int(chosen)
+    if chosen not in pool:
+        warnings.warn(f"Device {chosen} is not in the visible pool {pool} ⚠️ - clamping to {pool[0]}.")
+        chosen = pool[0]
+    select_cuda_device.last_rank = (rank, source)   # for diagnostics / logging
+    return chosen
 
 '''# Function to set up CUDA context for DASK workers (for true GPU interop)'''
+def setup_daskworker_gpu_context(policy="round-robin", device=None, devices=None):
+    """Initialize CUDA context for this worker thread (quiet sibling of
+    :func:`init_daskworker_cuda_context`). Returns the bound device id, or None on CPU."""
+    return init_daskworker_cuda_context(policy=policy, device=device,
+                                        devices=devices, verbose=True)
+
+def init_daskworker_cuda_context(policy="round-robin", device=None, devices=None, verbose=True):
+    """Bind this Dask worker to a CUDA device and warm up its context.
+
+    Register it across a cluster with either of::
+
+        client.run(slck.init_daskworker_cuda_context)                       # round-robin
+        client.run(slck.init_daskworker_cuda_context, policy="least-busy")
+        client.run(slck.init_daskworker_cuda_context, policy="explicit",
+                   device={0: 0, 1: 1, 2: 0, 3: 1})                         # user-defined
+        client.run(slck.init_daskworker_cuda_context,
+                   device=lambda rank, pool: pool[rank % 2])                # your own rule
+
+    Returns the bound device id (or None when running CPU-only).
+    """
+    if not GPU_AVAILABLE:
+        warnings.warn("GPU acceleration is not available. Dask workers will run on CPU only.")
+        return
+    
+    chosen = select_cuda_device(policy=policy, device=device, devices=devices)
+    if chosen is None:
+        warnings.warn("No CUDA devices visible to this worker ⚠️ - staying on CPU.")
+        return None
+
+    try:
+        _cupy.cuda.Device(chosen).use()
+        # Touch the device so the context is actually created, not merely selected.
+        _cupy.zeros(1)
+    except Exception as e:
+        warnings.warn(f"Could not bind worker to device {chosen}: {e} ❌ - falling back to CPU.")
+        return None
+
+    _WORKER_DEVICE.device_id = chosen
+    rank, source = getattr(select_cuda_device, "last_rank", ("?", "?"))
+    if verbose:
+        print(f"Worker {threading.current_thread().name} (rank {rank} via {source}) "
+              f"→ CUDA device {chosen} of {visible_devices()} ✅ [policy={policy}]")
+    return chosen
+    
+    #device = _cupy.cuda.Device(0)
+    #device.use()
+    #context = _cupy.cuda.runtime.getCurrentContext()
+    #print(f"Worker {threading.current_thread().name}: Context ID {context}")
+    # Should see different context IDs for each worker
+
+def get_worker_device():
+    """Which device did Slick bind this worker/thread to? None if unbound."""
+    return getattr(_WORKER_DEVICE, "device_id", None)
+
+'''# Function to set up CUDA context for DASK workers (for true GPU interop)
 def setup_daskworker_gpu_context():
     """Initialize CUDA context for this worker thread"""
     if GPU_AVAILABLE:
         _cupy.cuda.Device(0).use()  # or assign different devices if multi-GPU
     # Store context info in thread-local storage if needed
+#'''
 
+'''# 
 def init_daskworker_cuda_context():
     if not GPU_AVAILABLE:
         warnings.warn("GPU acceleration is not available. Dask workers will run on CPU only.")
@@ -333,6 +524,7 @@ def init_daskworker_cuda_context():
     context = _cupy.cuda.runtime.getCurrentContext()
     print(f"Worker {threading.current_thread().name}: Context ID {context}")
     # Should see different context IDs for each worker
+#'''
     
 # OTHER USEFUL UTILITIES FOR EXPLICIT TO_CPU() CONVERSIONS BY USER!
 def asnumpy(arr):
@@ -354,6 +546,8 @@ def is_gpu_array(arr):
 
 
 # Expose key functions at module level
-__all__ = ['np', 'numpy', 'fft', 'signal', 'interpolate', 'stats', 'ndimage', 'init_daskworker_cuda_context',
+__all__ = ['np', 'numpy', 'nprandom', 'la', 'linalg',  'fft', 'signal', 'interpolate', 'stats', 'ndimage', 'init_daskworker_cuda_context',
            'to_cpu', 'to_gpu', 'asnumpy', 'asarray', 'is_gpu_array', 'setup_daskworker_gpu_context',
-           'cpu_safe_import', 'ensure_cpu', 'GPU_AVAILABLE', 'USE_GPU', 'RAPIDS_AVAILABLE', 'DASK_AVAILABLE']
+           'cpu_safe_import', 'ensure_cpu', 'GPU_AVAILABLE', 'USE_GPU', 'RAPIDS_AVAILABLE', 'DASK_AVAILABLE',
+           # Multi-GPU worker placement 🎛️
+            'select_cuda_device', 'visible_devices', 'worker_rank', 'get_worker_device']
