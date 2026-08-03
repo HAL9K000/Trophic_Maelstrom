@@ -1,0 +1,61 @@
+# pip3 requirements for the Utilities/ and Data_Processing/ Python layers.
+# Requires Python 3.10+ (automation scripts in this repo invoke python3.11 explicitly).
+#
+# Create and activate a venv first, then install into it -- e.g. named "trophic-maelstrom":
+#   python3 -m venv ~/trophic-maelstrom
+#   source ~/trophic-maelstrom/bin/activate
+#   pip3 install --upgrade pip
+#   pip3 install -r pip3-requirements.txt
+#
+# Or run setup_environment.sh alongside this file to automate all of the above, including
+# detecting your CUDA version and installing a matching `cupy` build for GPU acceleration.
+#
+# This is the pip equivalent of environment.yml (see that file if you'd rather use conda/mamba,
+# which also picks up a few non-Python system tools -- see the NOT INCLUDED note at the bottom).
+
+# ---- Core: required by both Utilities/ and Data_Processing/ -----------------------------------
+numpy
+pandas
+scipy
+regex
+matplotlib
+scikit-learn                   # sklearn.cluster.KMeans, sklearn.mixture.GaussianMixture
+
+# ---- Core: required by Utilities/ (reorganise_dir.py, reorganise_prelims_dir.py, glow_up.py) --
+scikit-image
+esda                            # spatial statistics (bivariate Moran's I)
+libpysal                        # spatial weights, used by esda
+joblib                          # CPU parallel-post-processing fallback backend
+dask[distributed]               # preferred parallel backend -- see Utilities/README.md's note on
+                                 # why Dask is recommended over joblib for shared-GPU multi-threading
+psutil                          # imported unconditionally by glow_up.py
+
+# ---- Core: required by Data_Processing/ (frame_builder.py) ------------------------------------
+seaborn
+opencv-python                   # cv2 -- builds/reads the per-species heatmap videos
+powerlaw                        # power-law/decay fit overlays in several analyse_* functions
+adjustText                      # label-placement helper for a few plots
+
+# ---- Optional: only needed to run Data_Processing/frame_builder_walkthrough.ipynb -------------
+jupyterlab
+ipykernel
+nbformat
+nbconvert                       # only if you want to execute the notebook headlessly (as opposed
+                                 # to interactively in Jupyter), e.g. `jupyter nbconvert --execute`
+
+# ---- Optional: GPU acceleration (cupy) ---------------------------------------------------------
+# NOT pinned above -- the correct build depends on your installed CUDA toolkit version, and
+# installing the wrong one breaks rather than degrades. Everything in both layers degrades
+# gracefully to NumPy/SciPy on CPU if cupy isn't installed or USE_GPU/--gpu isn't set.
+# Pick ONE of the following (uncomment or install manually) once you know your CUDA version:
+#   pip install cupy-cuda12x     # for CUDA 12.x
+#   pip install cupy-cuda11x     # for CUDA 11.x
+# See https://docs.cupy.dev/en/stable/install.html if you're unsure which build you need.
+
+# ---- NOT INCLUDED: non-Python system tools, install via your OS package manager ---------------
+# These are only needed for specific optional features and aren't meaningfully pip-installable:
+#   ffmpeg  -- Data_Processing/frame_builder.py's H264 video re-encode step (subprocess call).
+#              Without it, video generation still works, you just keep the original .mp4.
+#   p7zip (the `7z` command) -- dreamcatcher_automata.bash's compression step.
+#   rsync, expect -- dreamcatcher_automata.bash's remote-device collation step (expect_commands.sh).
+# e.g. on Debian/Ubuntu: sudo apt install ffmpeg p7zip-full rsync expect

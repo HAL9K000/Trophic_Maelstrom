@@ -24,13 +24,13 @@ simulations/Utilities/test.ipynb
 *.png
 *.ai
 *.json
+*.gif
+*.csv
+*.txt
+*.o
 *midnight_screening*.bash
 !architecture_flowchart.png
 !pip3-requirements.txt
 !MSThesisFigures/NPDPSchema.png
 !MSThesisFigures/TCPSchema.png
 !MSThesisFigures/DensityTable.png
-*.gif
-*.csv
-*.txt
-*.o
