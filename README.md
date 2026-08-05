@@ -1,5 +1,15 @@
+<div align="center">
+
 # Trophic Maelstrom 
 ## A High Performance Simulation and Data-Analysis Pipeline For Desertification Transitions. ⚡⚡
+
+[![C++](https://img.shields.io/badge/C++-20%2B-00599C.svg?style=for-the-badge&logo=cplusplus&logoColor=white)](https://isocpp.org/std/status/)
+[![Python](https://img.shields.io/badge/python-3.10%2B-276DC3.svg?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
+[![CUDA](https://img.shields.io/badge/CUDA_SDK-12.0%2B-76B900.svg?style=for-the-badge&logo=nvidia&logoColor=white)](https://isocpp.org/std/status/)
+[![CPU fallback](https://img.shields.io/badge/CPU%20fallback-automatic-A9D08E.svg?style=for-the-badge)]()
+[![Build](https://img.shields.io/badge/Build-Passing-teal.svg?style=for-the-badge)]()
+[![Platform](https://img.shields.io/badge/platform-Linux-FCC624.svg?style=for-the-badge)]()
+</div>
 
 A scientific HPC SPDE (Stochastic Partial Differential Equation) codebase for spatial ecological simulations: the Rietkerk vegetation-water dryland model (extended to a 3-species vegetation-grazer-predator trophic chain) and directed-percolation
 (DP) model (implemented as the Reggeon Field Theoretic Equation, similarly extended to 1/2/3 species trophic chains) as used as simpler analogues for studying critical phenomena. The codebase spans three layers:
