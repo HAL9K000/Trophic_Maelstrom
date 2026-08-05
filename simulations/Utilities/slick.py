@@ -448,7 +448,7 @@ def select_cuda_device(policy="round-robin", device=None, devices=None):
     select_cuda_device.last_rank = (rank, source)   # for diagnostics / logging
     return chosen
 
-'''# Function to set up CUDA context for DASK workers (for true GPU interop)'''
+#'''# Function to set up CUDA context for DASK workers (for true GPU interop)
 def setup_daskworker_gpu_context(policy="round-robin", device=None, devices=None):
     """Initialize CUDA context for this worker thread (quiet sibling of
     :func:`init_daskworker_cuda_context`). Returns the bound device id, or None on CPU."""
@@ -498,6 +498,8 @@ def init_daskworker_cuda_context(policy="round-robin", device=None, devices=None
     #context = _cupy.cuda.runtime.getCurrentContext()
     #print(f"Worker {threading.current_thread().name}: Context ID {context}")
     # Should see different context IDs for each worker
+
+#'''
 
 def get_worker_device():
     """Which device did Slick bind this worker/thread to? None if unbound."""

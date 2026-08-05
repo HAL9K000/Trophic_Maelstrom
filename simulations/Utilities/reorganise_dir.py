@@ -772,10 +772,9 @@ def unified_post_process(prefixes= [], filetype_ID="FRAME", ncores= CPU_Ncores, 
     if gpu.DASK_AVAILABLE:
         # Use Dask to parallelize the post-processing of each subdirectory.
         mem_limit = "3GB"
-        daskclient = dask_Client(processes=True, n_workers=ncores, threads_per_worker=1, memory_limit="3GB",
-                                 worker_kwargs={'death_timeout': 60,  'preload': []}, timeout=60)
+        daskclient = dask_Client(processes=True, n_workers=ncores, threads_per_worker=1, memory_limit="3GB")#, #worker_kwargs={'death_timeout': 60,  'preload': []}, timeout=60)
         if gpu.GPU_AVAILABLE:
-            #daskclient.register_worker_plugin(gpu.setup_daskworker_gpu_context(policy='least-busy'))
+            #daskclient.register_worker_plugin(gpu.setup_daskworker_gpu_context())
             daskclient.run(gpu.setup_daskworker_gpu_context, policy='least-busy')
         # Assigns local CUDA context to each worker.
         joblib_backend = 'dask'
@@ -1234,8 +1233,8 @@ end_time_CPU = None
 if __name__ == "__main__":
     main()
     #post_process(prefixes) # OLD, IGNORE
-    unified_post_process(prefixes, "FRAME", ncores= CPU_Ncores, tmin=80000, tmax = 200000)
-    unified_post_process(prefixes, "GAMMA", ncores= CPU_Ncores, tmin=70000)
+    unified_post_process(prefixes, "FRAME", ncores= CPU_Ncores, tmin=60000, tmax = 200000)
+    unified_post_process(prefixes, "GAMMA", ncores= CPU_Ncores, tmin=60000)
     #post_process_gamma(prefixes)  # OLD, IGNORE
     #post_imgprocess(prefixes= prefixes, Trange=[82000.1, 84000, 86000, 88000, 90000, 92000, 94000, 96000, 98000, 100000], largest_T_only= True)
     #post_imgprocess(prefixes= prefixes, Trange=[0, 6000], largest_T_only= True)

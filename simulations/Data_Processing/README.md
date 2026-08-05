@@ -11,6 +11,27 @@ is, per its own name and location, deprecated and out of scope for this document
 
 ## Dependencies
 
+<details><summary><b>Dependency matrix</b> (click to expand)</summary>
+
+| Dependency | Required? | Notes |
+|---|---|---|
+| Python 3.10+ | ✅ Yes | Developed/tested against a pip3.11 virtualenv |
+| `numpy` | ✅ Yes | core numerics |
+| `pandas` | ✅ Yes | CSV frame/prelim I/O |
+| `scipy` | ✅ Yes | interpolation, stats |
+| `regex` | ✅ Yes | filename pattern matching |
+| `powerlaw` | ✅ Yes | power-law/decay fit overlays in several `analyse_*` functions |
+| `matplotlib` | ✅ Yes | base plotting backend |
+| `seaborn` | ✅ Yes | heatmap/summary plotting |
+| `adjustText` | ✅ Yes | label-placement helper for a few plots |
+| `opencv-python` (`cv2`) | ✅ Yes | building videos from the generated PNG frames |
+| `scikit-learn` | ✅ Yes | `sklearn.cluster.KMeans`, used by the clustering-adjacent analysis functions |
+| `ffmpeg` (binary, not pip-installable) | ✔️ Optional, but recommended | H264 video re-encode step via `subprocess`; skipped automatically (with a warning) if not found or the OS isn't Linux — video generation itself still works either way, you just keep the original (non-H264) `.mp4` |
+| `jupyterlab` / `ipykernel` / `nbformat` | ⚪ Optional | only to run `frame_builder_walkthrough.ipynb` |
+| `nbconvert` | ⚪ Optional | only to execute that notebook headlessly (`jupyter nbconvert --execute`) |
+
+</details>
+
 **Setting up dependencies.** `../../environment.yml`, `../../pip3-requirements.txt` cover this layer
 alongside `Utilities/` in one shared environment -- see the setup commands (pip venv or conda, both
 named `trophic-maelstrom`) at the top of [`Utilities/README.md`](simulations/Utilities/README.md)'s Dependencies section.

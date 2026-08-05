@@ -19,7 +19,30 @@ For the repository-wide picture (how this fits with the C++ simulators and `Data
 
 ## Dependencies
 
-**Setting up dependencies.** `../environment.yml` and `../pip3-requirements.txt` cover everything
+<details><summary><b>Dependency matrix</b> (click to expand)</summary>
+
+| Dependency | Required? | Notes |
+|---|---|---|
+| Python 3.10+ | ✅ Yes | automation scripts invoke `python3.11` explicitly |
+| `numpy` | ✅ Yes | core numerics |
+| `pandas` | ✅ Yes | CSV frame/prelim I/O |
+| `scipy` | ✅ Yes | FFT, interpolation, stats |
+| `regex` | ✅ Yes | filename pattern matching during reorganisation |
+| `scikit-learn` | ✅ Yes | `sklearn.cluster.KMeans`, `sklearn.mixture.GaussianMixture` |
+| `scikit-image` | ✅ Yes | — |
+| `esda` | ✅ Yes | spatial statistics — bivariate Moran's I |
+| `libpysal` | ✅ Yes | spatial weights, used by `esda` |
+| `dask[distributed]` | ⚠️✔️ Recommended | preferred over `joblib` for concurrent CPU multi-threading over shared GPU devices — negates Python's GIL |
+| `joblib` | ⚠️ Fallback | CPU parallel-post-processing fallback backend, used if Dask isn't available |
+| `psutil` | ✅ Yes | imported unconditionally by `glow_up.py` |
+| `cupy` + `cupyx.scipy.{fft,signal,ndimage}` | ✔️ Optional, but recommended | GPU acceleration — **recommended** for grid sizes `L² ≥ 256×256`; degrades gracefully to NumPy/SciPy if not importable or `USE_GPU`/`--gpu` isn't set |
+| `p7zip` (`7z`, binary) | ✔️ Optional, but recommended | `dreamcatcher_automata.bash`'s compression step |
+| `rsync` (binary) | ⚪ Optional  | `dreamcatcher_automata.bash`'s remote-device data-collation step |
+| `expect` (binary) | ⚪ Optional  | drives the `rsync` calls in `expect_commands.sh`, used by `dreamcatcher_automata.bash` |
+
+</details>
+
+**Setting up dependencies.** `../../environment.yml` and `../../pip3-requirements.txt` cover everything
 listed below (both core and optional) for this layer *and* `Data_Processing/`, since the two share
 one environment in practice. Pick whichever of pip or conda you prefer:
 
@@ -37,18 +60,12 @@ one environment in practice. Pick whichever of pip or conda you prefer:
   conda env create -n trophic-maelstrom -f ../../environment.yml
   conda activate trophic-maelstrom
   ```
-
-- Python 3.10+ (Note that the automation scripts invoke `python3.11` explicitly)
-- `numpy`, `pandas`, `scipy`, `regex`
-- `scikit-learn` (`sklearn.cluster.KMeans`, `sklearn.mixture.GaussianMixture`)
-- `scikit-image`, `esda`, `libpysal` (spatial statistics — Moran's I)
-- `dask`/`dask.distributed` and/or `joblib` (parallel post-processing) — NOTE: Dask is **strongly recommended** over joblib for concurrent CPU multi--threading over shared GPU devices, as it negates Python's GIL.
+Some further notes about the dependencies:
+- While the automation scripts invoke `python3.11` explicitly, generally this pipeline has been validated for Python versions 3.10-3.13. 
+-  Dask (`dask`/`dask.distributed`) is **strongly recommended** over `joblib` for concurrent CPU multi--threading over shared GPU devices, as it negates Python's GIL.
 - Optionally: `cupy` + `cupyx.scipy.{fft,signal,ndimage}` for GPU acceleration (see [GPU vs
   CPU](#gpu-vs-cpu-when-to-use---gpu)) — entirely optional but **recommended** for grid sizes `L² >= 256x256`, everything degrades gracefully to NumPy/SciPy if
   `cupy` isn't importable or `USE_GPU`/`--gpu` isn't set.
-- `7z` (`p7zip`), only if using `dreamcatcher_automata.bash`'s compression step.
-- `rsync` and `expect`, only if using `dreamcatcher_automata.bash`'s remote-device data-collation step (see
-  below) — `expect` in particular is required by `expect_commands.sh`, which drives the `rsync` calls.
 
 Both `reorganise_dir.py --help` and `reorganise_prelims_dir.py --help` will print argparse's own
 authoritative, live description of every flag — run that whenever this document and the script's actual
