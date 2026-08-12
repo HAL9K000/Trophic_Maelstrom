@@ -5,6 +5,10 @@ model, extended to a 1/2/3-species trophic chain (vegetation → grazer → pred
 periodic lattice and are integrated in time with a stochastic Runge-Kutta/Dornic scheme, parallelised over
 OpenMP threads (one thread per replicate/rainfall-value combination). Species interaction terms ("gamma" (γ), the probability of local non-directional dispersal) are computed each timestep either directly over the perception neighbourhood area Ω  (O(N²*Ω)) or via a cached FFT convolution (O(N² log Ω)) using FFTW3, and initial frames can be generated from closed-form mean-field-theory expressions parsed at runtime with ExprTk. Each run performs a scan over a range of the rainfall control parameter `a`, and writes CSV frames, per-timestep aggregate ("Prelim") data, and summary order-parameter statistics to disk.
 
+> **Testing status:** ⚠️⚠️ **Only the CPU path** (compiling without `-DBARRACUDA` builds) has been
+> rigorously tested and validated ✅✅. The CUDA-accelerated path (compiling with `-DBARRACUDA`, which uses a CUDA stencil instead of an FFTW3 one to compute γ) is more experimental, and is **known to contain bugs** ❌ 
+> as of July 2026. Use the CPU build for anything beyond quick local exploration, and treat CUDA-accelerated results with corresponding caution until cross-checked against the CPU path.
+
 This document covers the two core implementation files — `rietkerk_bjork_basic.cpp`/`.h` and the
 `order_*_unity_rietkerk.cpp`/`order_*_burnin_rietkerk.cpp` drivers that link against them — and how to
 compile and run them. The directory also contains a number of variant/scratch files (a locust
@@ -19,15 +23,18 @@ For the repository-wide picture (data-output conventions, how this fits with `Pe
 
 ## Dependencies
 
-- `g++` with C++23 support (the scheduling scripts here use `g++-14`)
+Refer to the top level README [📦 Installation instructions](../../README.md#-installation--setting-up-dependencies) for a comprehensive description of core and optional dependencies, as well as build/installation recommendations and optimisations.
+
+- `g++` with atleast C++20 and preferably C++23 support (the scheduling scripts here use `g++-14`)
 - OpenMP (`-fopenmp`)
 - [FFTW3](http://www.fftw.org/) — FFT-accelerated interaction-kernel convolution
-  (`#include <fftw3.h>` in `rietkerk_bjork_basic.h`). Not vendored — build/install it yourself and make sure
-  your compiler/linker can find its headers and `libfftw3`/`libfftw3_threads`.
+  (`#include <fftw3.h>` in `rietkerk_bjork_basic.h`). Not vendored — build/install it yourself and make sure your compiler/linker can find its headers and `libfftw3`/`libfftw3_threads`. We **strongly recommend building FFTW3 from source with `--enable-threads`** and other appropriate architecture--specific compiler flags for a **substantial performance speedup**.
 - [ExprTk](https://github.com/ArashPartow/exprtk) (header-only) — symbolic-expression parsing used for
   frame initialization (`#include <exprtk.hpp>`). Not vendored — put it on your include path.
-- GNU `screen`, only if using the local parallel job launchers in `Scheduling Bashes/`.
+- GNU [`screen`](https://www.gnu.org/software/screen/), only if using the local parallel job launchers in `Scheduling Bashes/`. 
 - A SLURM environment (e.g. Rutgers' Amarel cluster), only if using the cluster job-array script.
+- A CUDA Toolkit (`nvcc`) — required only if you actually want a GPU build (`-DBARRACUDA` in
+  `Rietkerk_FD`/`Percolation_FD`); every CPU-only build in this repo works without it. 
 
 ## Core files
 
@@ -108,9 +115,6 @@ g++-14 -O3 -march=native -DSPB=3 -DINIT=2 \
   -L${HOME}/.local/lib -lfftw3_threads -lfftw3 -lm -fopenmp \
   -o rietkerk_3sp_burnin.out -std=c++23
 ```
-
-The committed `.vscode/c_cpp_properties.json` is IntelliSense-only and does not reflect these real build
-commands — don't treat it as authoritative for compiler/flag choices.
 
 ## Running
 

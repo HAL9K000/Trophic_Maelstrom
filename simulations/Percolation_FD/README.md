@@ -4,6 +4,10 @@ Finite-difference (Dornic-scheme) stochastic implementation of a multi-species R
 absorbing-state phase transitions and critical phenomena, since it drops the vegetation-water coupling while keeping the same trophic-interaction and stochastic-integration machinery. Simulations run on a 2D periodic lattice, parallelised over OpenMP threads (one thread per replicate/control-parameter combination).
 Species interaction terms ("gamma" (γ), the probability of local non-directional dispersal) are computed each timestep either directly over the perception neighbourhood area Ω  (O(N²*Ω)) or via a cached FFT convolution (O(N² log Ω)) using FFTW3, and initial frames can be generated from closed-form expressions parsed at runtime with ExprTk. Each run scans a range of the control parameter `a` and writes CSV frames, per-timestep aggregate ("Prelim") data, and summary order-parameter statistics to disk.
 
+> **Testing status:** ⚠️⚠️ **Only the CPU path** (compiling without `-DBARRACUDA` builds) has been
+> rigorously tested and validated ✅✅. The CUDA-accelerated path (compiling with `-DBARRACUDA`, which uses a CUDA stencil instead of an FFTW3 one to compute γ) is more experimental, and is **known to contain bugs** ❌ 
+> as of July 2026. Use the CPU build for anything beyond quick local exploration, and treat CUDA-accelerated results with corresponding caution until cross-checked against the CPU path.
+
 This document covers the two core implementation files — `multiSPDP.cpp`/`MultiSPDP.h` and the
 `order_*stocDP_unity.cpp`/`order_*stocDP_burnin.cpp` drivers that link against them — and how to compile and
 run them. `SimpleDP_Analysis/` holds a separate, simpler single-species DP implementation
@@ -16,18 +20,21 @@ and the `Utilities`/`Data_Processing` post-processing scripts), see the top-leve
 
 ## Dependencies
 
-- `g++` with C++23 support (scheduling scripts use `g++-14`)
+Refer to the top level README [📦 Installation instructions](../../README.md#-installation--setting-up-dependencies) for a comprehensive description of core and optional dependencies, as well as build/installation recommendations and optimisations.
+
+- `g++` with atleast C++20 and preferably C++23 support (the scheduling scripts here use `g++-14`)
 - OpenMP (`-fopenmp`)
 - [FFTW3](http://www.fftw.org/) — FFT-accelerated interaction-kernel convolution
-  (`#include <fftw3.h>` in `MultiSPDP.h`). Not vendored — build/install it yourself and make sure your
-  compiler/linker can find its headers and `libfftw3`/`libfftw3_threads`.
+  (`#include <fftw3.h>` in `rietkerk_bjork_basic.h`). Not vendored — build/install it yourself and make sure your compiler/linker can find its headers and `libfftw3`/`libfftw3_threads`. We **strongly recommend building FFTW3 from source with `--enable-threads`** and other appropriate architecture--specific compiler flags for a **substantial performance speedup**.
 - [ExprTk](https://github.com/ArashPartow/exprtk) (header-only) — symbolic-expression parsing used for frame
   initialization (`#include <exprtk.hpp>` in `MultiSPDP.h`). Not vendored — put it on your include path.
 - [Armadillo](http://arma.sourceforge.net/) — linear algebra / GMM-clustering support, optional but recommended. Only pulled in when compiled with `-DARMA`, but the scheduling scripts link `-larmadillo` unconditionally, so if using these scripts, it should be installed regardless.
 - Only needed if compiling with `-DCRITGMM` (see below): a Python 3 interpreter with NumPy development
   headers, and `../Utilities/gmm_classifier.py` importable at runtime.
-- GNU `screen`, only if using the local parallel job launchers in `Scheduling Bashes/`.
+- GNU [`screen`](https://www.gnu.org/software/screen/), only if using the local parallel job launchers in `Scheduling Bashes/`.
 - A SLURM environment for HPC use, only if using the cluster job-array script.
+- A CUDA Toolkit (`nvcc`) — required only if you actually want a GPU build (`-DBARRACUDA` in
+  `Rietkerk_FD`/`Percolation_FD`); every CPU-only build in this repo works without it. 
 
 None of FFTW3, ExprTk, or Armadillo is vendored in this repo — install them yourself.
 

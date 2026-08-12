@@ -2,10 +2,10 @@
 
 Fokker-Planck-equation (FPE) variant of the Rietkerk vegetation-water dryland model (see `../Rietkerk_FD` for the base finite-difference model this extends). Instead of treating dispersal as plain diffusion, this variant adds an advection-diffusion step for the population density fields, computed either numerically on the GPU via a dedicated CUDA kernel, or analytically on the CPU via precomputed Gaussian stencils, to capture directional/velocity-biased movement. Simulations run on a 2D periodic lattice, parallelised over OpenMP threads, with the same consumer movement switching behaviour ("gamma") and stochastic-integration machinery as `Rietkerk_FD`. Each run scans a range of the rainfall control parameter `a` and writes CSV frames, per-timestep aggregate ("Prelim") data, and summary order-parameter statistics to disk.
 
-> **Testing status: ⚠️⚠️ ** Only the **CUDA path** (`kernel_advdiff_FKE2D.cu`, `-DBARRACUDA` builds) has been
-> rigorously tested and validated. The CPU-only path (compiling without `-DBARRACUDA`, which falls back to
+> **Testing status:** ⚠️⚠️ **Only the CUDA path** (`kernel_advdiff_FKE2D.cu`, `-DBARRACUDA` builds) has been
+> rigorously tested and validated✅✅. The CPU-only path (compiling without `-DBARRACUDA`, which falls back to
 > the analytic Gaussian-stencil integration in `rietkerk_bjork_basic.h`) is more experimental, has seen far
-> less validation, and may contain bugs. Use the CUDA build for anything beyond quick local exploration, and
+> less validation, and may contain bugs ⚠️. Use the CUDA build for anything beyond quick local exploration, and
 > treat CPU-only FPE results with corresponding caution until cross-checked against the CUDA path.
 
 This document covers the core implementation files — `rietkerk_bjork_FKE.cpp`/`rietkerk_bjork_basic.h`, the
@@ -19,14 +19,16 @@ and the `Utilities`/`Data_Processing` post-processing scripts), see the top-leve
 
 ## Dependencies
 
-- `g++` with C++20/23 support (scheduling scripts here use `g++-12`, `g++-14` in some launchers)
+Refer to the top level README [📦 Installation instructions](../../README.md#-installation--setting-up-dependencies) for a comprehensive description of core and optional dependencies, as well as build/installation recommendations and optimisations.
+
+- `g++` with C++20 support (scheduling scripts here use `g++-14` with `--std=c++20`)
 - OpenMP (`-fopenmp`)
 - [FFTW3](http://www.fftw.org/) and [ExprTk](https://github.com/ArashPartow/exprtk) (header-only) — same as
-  `Rietkerk_FD`; required by the shared `rietkerk_bjork_basic.h` header. Neither is vendored.
+  `Rietkerk_FD`; required by the shared `rietkerk_bjork_basic.h` header. Neither is vendored. We **strongly recommend building FFTW3 from source with `--enable-threads`** and other appropriate architecture--specific compiler flags for a **substantial performance speedup**
 - **CUDA toolkit (`nvcc`) — required for the validated path.** `kernel_advdiff_FKE2D.cu` implements the GPU
   advection-diffusion kernel; the CUDA scheduling scripts check for `nvcc` up front and refuse to run
   without it.
-- GNU `screen`, only if using the local parallel job launchers in `Scheduling Bashes/`.
+- GNU [`screen`](https://www.gnu.org/software/screen/), only if using the local parallel job launchers in `Scheduling Bashes/`.
 - A SLURM environment (e.g. Rutgers' Amarel cluster), only if using the cluster job-array script (see the
   caveat in [Running many jobs](#running-many-jobs-scheduling-bashes) — the one provided here is stale).
 
